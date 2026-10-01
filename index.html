@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111716">
+  <meta name="description" content="한 번의 탭, 완벽한 방어. 모든 공격을 패링할 수 있는 모바일 보스 전투 프로토타입.">
+  <title>잔상 · AFTERIMAGE</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpath fill='%23d5bc87' d='M32 3 57 32 32 61 7 32Zm0 12L18 32l14 17 14-17Z'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <svg class="svg-library" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="i-blade" viewBox="0 0 24 24"><path d="m14 4 6-1-1 6-9 9-4-4 8-10ZM5 13l6 6M7 17l-4 4"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="m12 2 8 4v6c0 5-8 10-8 10S4 17 4 12V6l8-4Z"/><path d="m8 12 3 3 5-6"/></symbol>
+    <symbol id="i-sound" viewBox="0 0 24 24"><path d="M11 4 6 8H2v8h4l5 4V4ZM15 8c3 2 3 6 0 8m3-11c5 4 5 10 0 14"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol>
+    <symbol id="i-retry" viewBox="0 0 24 24"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h15m-5-5 5 5-5 5"/></symbol>
+  </svg>
+  <div class="app">
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="잔상 처음 화면"><span class="brand-mark">◈</span><span>잔상<small>AFTERIMAGE</small></span></a>
+      <div class="edition"><span class="live-dot"></span> COMBAT PROTOTYPE <span class="version">/ 0.1</span></div>
+      <div class="tools">
+        <button class="icon-button" id="sound" aria-label="소리 끄기" aria-pressed="true" title="소리"><svg><use href="#i-sound"/></svg></button>
+        <button class="icon-button" id="pause" aria-label="일시 정지" title="일시 정지 (Esc)" disabled><svg><use href="#i-pause"/></svg></button>
+      </div>
+    </header>
+
+    <main>
+      <div class="section-heading"><span><span class="tiny-cross">+</span> THE PARRY EXPERIMENT</span><span>승리의 조건은, 타이밍.</span></div>
+      <div class="game-layout">
+        <section class="battle-column" aria-label="보스 전투">
+          <div class="arena" id="arena">
+            <canvas id="scene" aria-label="보스의 빛나는 팔과 무기를 보고 공격 방향과 패링 타이밍을 읽으세요"></canvas>
+            <div class="arena-vignette"></div>
+            <div class="boss-hud">
+              <div class="boss-meta"><span class="overline">BOSS 01 <span class="separator">/</span> THE HOLLOW WARDEN</span><span id="phase" class="phase">PHASE 01</span></div>
+              <div class="boss-title"><h1>공허의 파수꾼</h1><span id="boss-health">240 <small>/ 240</small></span></div>
+              <div class="boss-health-track" role="progressbar" aria-label="보스 체력" aria-valuemin="0" aria-valuemax="240" aria-valuenow="240"><div id="boss-fill"></div><i></i></div>
+            </div>
+            <div class="stage-note"><span>TRIAL CHAMBER</span><b>001</b><i></i></div>
+            <div class="phase-toast" id="phase-toast">PHASE II <span>보스의 공격이 빨라집니다</span></div>
+            <div class="combat-feedback" id="feedback" aria-live="polite"><strong></strong><span></span></div>
+            <div class="timing-caption" id="timing-caption">상대의 움직임을 읽으세요</div>
+            <div class="arena-bottom"><span class="turn-tag" id="turn-tag"><i></i> 전투 대기</span><span class="arena-life" id="arena-life" aria-label="생명력 5/5"><i></i><i></i><i></i><i></i><i></i><b>5 / 5</b></span><span id="round-label">ROUND —</span></div>
+
+            <div class="death-screen" id="death-screen" role="status" aria-live="assertive" hidden><span lang="en">You Died</span></div>
+            <div class="overlay" id="overlay">
+              <div class="intro-emblem" id="intro-emblem">◇</div>
+              <span class="overline" id="overlay-eyebrow">A DUEL OF TIMING</span>
+              <h2 id="overlay-title">한 번의 탭.<br><em>완벽한 방어.</em></h2>
+              <p id="overlay-copy">피할 수 없는 공격은 없습니다.<br>순간을 읽고, 모든 공격을 막아내세요.</p>
+              <div class="result-stats" id="result-stats" hidden></div>
+              <button class="start-button" id="start">전투 시작 <svg><use href="#i-arrow"/></svg></button>
+              <span class="overlay-foot" id="overlay-foot">이어폰을 착용하면 타이밍에 더 집중할 수 있어요</span>
+            </div>
+          </div>
+
+          <div class="action-dock">
+            <button id="parry-left" class="action-button parry-button" aria-label="왼쪽 패링" aria-keyshortcuts="A" disabled><span class="parry-direction" aria-hidden="true">←</span><span><b>왼쪽 패링</b><small>왼쪽 공격 방어</small></span><kbd>A</kbd><span class="cooldown-fill"></span></button>
+            <button id="attack" class="action-button attack-button" aria-keyshortcuts="J" disabled><span><b>공격</b><small id="attack-hint">내 차례</small></span><kbd>J</kbd></button>
+            <button id="parry-right" class="action-button parry-button" aria-label="오른쪽 패링" aria-keyshortcuts="D" disabled><span class="parry-direction" aria-hidden="true">→</span><span><b>오른쪽 패링</b><small>오른쪽 공격 방어</small></span><kbd>D</kbd><span class="cooldown-fill"></span></button>
+          </div>
+          <div class="below-arena"><span><i class="small-diamond"></i> 양손 공격은 좌우를 동시에 누르세요</span><span>왼쪽 A · 오른쪽 D · 공격 J</span></div>
+        </section>
+
+        <aside class="sidebar">
+          <section class="player-panel">
+            <div class="panel-heading"><h2>전투 현황</h2><span class="overline">YOUR STATUS</span></div>
+            <div class="vitality-label"><span>생명력</span><span id="hp-text">5 / 5</span></div>
+            <div class="health-pips" id="health-pips" aria-label="생명력 5/5"><i></i><i></i><i></i><i></i><i></i></div>
+            <div class="status-stats"><div><span>성공한 패링</span><strong id="parry-count">00</strong></div><div><span>퍼펙트</span><strong id="perfect-count">00</strong></div><div><span>피격</span><strong id="hit-count">00</strong></div></div>
+            <div class="nohit-status" id="nohit-status"><span class="small-diamond"></span><span>NO-HIT CHALLENGE</span><span id="nohit-label">도전 준비</span></div>
+          </section>
+
+          <section class="guide-panel">
+            <div class="panel-heading"><h2>순간을 읽는 법</h2><span class="guide-number">01 — 03</span></div>
+            <ol class="guide-list">
+              <li><span>01</span><div><b>빈틈을 공격하세요</b><p>내 차례에 공격하면 보스가 반격합니다.</p></div></li>
+              <li><span>02</span><div><b>팔과 무기를 읽으세요</b><p>빛나는 팔과 무기 쪽을 방어하세요. 금빛으로 밝아지는 순간 패링! 원거리 탄은 내 몸에 도착할 때.</p></div></li>
+              <li><span>03</span><div><b>양손은 함께 막으세요</b><p>좌우를 두 손가락으로 동시에 누르세요. 연속 공격은 매 타격마다 새로 입력합니다.</p></div></li>
+            </ol>
+            <div class="timing-legend"><span class="legend-line"></span><span class="legend-window"></span><span class="legend-core"></span><div><span>패링 · 피해 0</span><b>PERFECT · 정확한 타이밍</b></div></div>
+          </section>
+
+          <section class="settings-panel">
+            <div class="mode-select" role="group" aria-label="전투 모드"><button data-mode="challenge" class="selected" aria-pressed="true">도전 모드</button><button data-mode="practice" aria-pressed="false">연습 모드 <span>∞</span></button></div>
+            <p id="mode-description">5번의 기회. 한 대도 맞지 않는 승리에 도전하세요.</p>
+            <label id="practice-attack-label" class="practice-picker" hidden>연습할 공격<select id="practice-attack"><option value="random">전체 무작위 조합</option></select><small>선택한 공격을 한 묶음씩 반복합니다</small></label>
+            <label class="toggle-row" for="guide"><span>타이밍 가이드 <small>원을 표시합니다</small></span><input type="checkbox" id="guide" checked><span class="toggle"></span></label>
+          </section>
+
+          <section class="record-panel"><span>BEST RECORD</span><strong id="best-record">첫 승리를 기다리는 중</strong><svg><use href="#i-shield"/></svg></section>
+        </aside>
+      </div>
+    </main>
+    <footer><span>AFTERIMAGE <i>／</i> COMBAT STUDY 001</span><span>오직 당신과, 다음 한 번의 타이밍.</span></footer>
+  </div>
+  <script type="module" src="./app.mjs"></script>
+</body>
+</html>
