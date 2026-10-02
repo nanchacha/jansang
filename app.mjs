@@ -1,5 +1,7 @@
-import { Combat, MODES, COOLDOWN, BOSS_HP, TELEGRAPH_MS, ATTACK_COMPONENTS } from './combat.mjs';
-import { motionAt, weaponPoseAt, playerPoseAt } from './motion.mjs';
+import { Combat, MODES, COOLDOWN, BOSS_HP, MAX_HP, HEAL_AMOUNT, POTIONS, ITEM_USE_MS, TELEGRAPH_MS, ATTACK_COMPONENTS } from './combat.mjs';
+import { motionAt, specialIntensityAt } from './motion.mjs';
+import { Fighters3D } from './fighters3d.mjs';
+import { CombatAudio } from './audio.mjs';
 
 const $ = id => document.getElementById(id);
 const canvas = $('scene');
@@ -11,12 +13,12 @@ let origin = performance.now();
 let lastFrame = performance.now();
 let width = 800, height = 550, hudBottom = 110;
 let feedbackUntil = 0, flashAt = -Infinity, flashKind = '', phaseUntil = 0;
-let showGuide = true, sound = true, audio;
+let showGuide = true, sound = true;
+const audio = new CombatAudio();
 let best = null;
 let particles = [];
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
-const impactSeen = new WeakSet();
-const cueSeen = new WeakSet();
+const swingSeen = new WeakSet();
 const launchSeen = new WeakSet();
 const projectileOrigins = new WeakMap();
 const characterArt = { boss: new Image(), player: new Image() };
@@ -37,49 +39,15 @@ const parryButtons = { left: $('parry-left'), right: $('parry-right') };
 const heldInputs = new Map();
 const guardColors = { left: '#88dcf2', right: '#f2ad8e' };
 
-// ponytail: cutout hinges reuse the two concept PNGs. Separate painted limb
-// sheets would be needed for elbow articulation or turning away from the camera.
-function artRig(bounds, definitions) {
-  const [x, y, w, h] = bounds;
-  const point = ([px, py]) => [x + px / 1024 * w, y + py / 1536 * h];
-  const body = new Path2D(); body.rect(x, y, w, h);
-  const parts = definitions.map(([side, pivot, points]) => {
-    const path = new Path2D();
-    points.map(point).forEach(([px, py], i) => i ? path.lineTo(px, py) : path.moveTo(px, py));
-    path.closePath(); body.addPath(path);
-    return { side, pivot: point(pivot), path };
-  });
-  return { bounds, body, parts };
-}
-const bossRig = artRig([-108, -138, 204, 306], [
-  ['left', [355, 404], [[0, 395], [395, 395], [407, 445], [358, 522], [330, 589], [344, 623], [334, 670], [286, 744], [265, 826], [0, 1430]]],
-  ['right', [677, 455], [[635, 425], [1024, 425], [1024, 1420], [875, 1110], [803, 898], [762, 803], [714, 692], [677, 606], [651, 551], [629, 496]]],
-]);
-const playerRig = artRig([-70, -118, 110, 165], [
-  ['left', [439, 457], [[0, 432], [448, 432], [482, 481], [450, 555], [419, 607], [427, 642], [402, 698], [366, 749], [317, 809], [0, 1410]]],
-  ['right', [747, 457], [[736, 419], [1024, 419], [1024, 632], [823, 607], [759, 580], [726, 521]]],
-]);
-
-function limbTransform(part, pose) {
-  const [x, y] = part.pivot;
-  ctx.translate(x + pose.x, y + pose.y);
-  ctx.rotate(pose.angle); ctx.scale(1, pose.scaleY); ctx.translate(-x, -y);
-}
-
-function drawArtRig(image, rig, poses, decorate) {
-  ctx.save(); ctx.clip(rig.body, 'evenodd'); ctx.drawImage(image, ...rig.bounds); ctx.restore();
-  for (const part of rig.parts) {
-    ctx.save(); limbTransform(part, poses[part.side]);
-    ctx.save(); ctx.clip(part.path); ctx.drawImage(image, ...rig.bounds); ctx.restore();
-    decorate?.(part.side);
-    ctx.restore();
-  }
-}
+let fighters;
+try { fighters = new Fighters3D(); } catch { /* Basic rendering remains playable without WebGL2. */ }
+canvas.dataset.renderer = fighters ? 'webgl2' : 'fallback';
 
 function resize() {
   const bounds = canvas.getBoundingClientRect();
   width = bounds.width; height = bounds.height;
   hudBottom = document.querySelector('.boss-hud').getBoundingClientRect().bottom - bounds.top;
+  $('special-warning').style.top = `${hudBottom + 13}px`;
   const dpr = Math.min(devicePixelRatio || 1, 2);
   canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -87,25 +55,7 @@ function resize() {
 new ResizeObserver(resize).observe(canvas);
 
 function unlockAudio() {
-  if (!sound) return;
-  try {
-    if (!audio) audio = new (window.AudioContext || window.webkitAudioContext)();
-    if (audio.state === 'suspended') audio.resume().catch(() => {});
-  } catch { /* Visual cues work without audio support. */ }
-}
-
-function tone(freq, duration = .12, type = 'sine', volume = .06, endFreq = freq) {
-  if (!sound || !audio || audio.state !== 'running') return;
-  const oscillator = audio.createOscillator();
-  const gain = audio.createGain();
-  oscillator.type = type;
-  oscillator.frequency.setValueAtTime(freq, audio.currentTime);
-  oscillator.frequency.exponentialRampToValueAtTime(endFreq, audio.currentTime + duration);
-  gain.gain.setValueAtTime(0, audio.currentTime);
-  gain.gain.linearRampToValueAtTime(volume, audio.currentTime + .008);
-  gain.gain.exponentialRampToValueAtTime(.001, audio.currentTime + duration);
-  oscillator.connect(gain).connect(audio.destination);
-  oscillator.start(); oscillator.stop(audio.currentTime + duration + .01);
+  if (sound && !paused) audio.unlock();
 }
 
 function feedback(title, description, kind = '', duration = 900) {
@@ -129,29 +79,29 @@ function burst(kind) {
 function processEvents() {
   for (const event of game.drain()) {
     switch (event.type) {
-      case 'start': feedback('YOUR TURN', '공격 버튼으로 전투를 시작하세요', '', 1500); break;
-      case 'attack': feedbackUntil = 0; tone(145, .16, 'triangle', .1, 48); burst('attack'); break;
+      case 'start': feedback('YOUR TURN', '공격하거나 아이템을 선택하세요', '', 1500); break;
+      case 'attack': feedbackUntil = 0; audio.play('attack', .55); burst('attack'); break;
+      case 'heal': feedback(`HP +${event.amount}`, `회복약 사용 · 남은 수량 ${game.potions}개`, 'heal', ITEM_USE_MS); break;
       case 'perfect':
       case 'parry': {
         const perfect = event.type === 'perfect';
         feedback(perfect ? 'PERFECT' : 'PARRY', `피해 0${showGuide ? ` · ${event.offset > 0 ? '+' : ''}${event.offset} ms` : ''}`, '', 750);
-        tone(perfect ? 1046 : 698, .3, 'sine', .09, perfect ? 1568 : 880);
-        tone(2200, .08, 'triangle', .035, 1800);
+        audio.play(perfect ? 'perfect' : 'parry', .72);
         burst(event.type);
         if (navigator.vibrate) navigator.vibrate(perfect ? [12, 25, 12] : 12);
         break;
       }
-      case 'early': feedback('TOO EARLY', '타격 순간까지 기다리세요', 'early', 500); tone(170, .08, 'sine', .04, 120); break;
+      case 'early': feedback('TOO EARLY', '타격 순간까지 기다리세요', 'early', 500); break;
       case 'late': feedback('TOO LATE', '조금 더 일찍 탭해 보세요', 'hurt', 700); break;
       case 'wrong': feedback('방향 확인', '빛나는 팔과 무기 쪽을 막아보세요', 'early', 650); break;
       case 'hurt':
-        feedback('HIT', game.mode === 'practice' ? '괜찮아요. 다음 타격에 집중하세요' : '타이밍을 놓쳤습니다 · 생명력 −1', 'hurt');
-        tone(85, .23, 'sawtooth', .05, 35); burst('hurt');
+        feedback(event.attackDamage > 1 ? 'CRITICAL HIT' : 'HIT', game.mode === 'practice' ? `연습 모드 · 실제 전투에서는 생명력 −${event.attackDamage}` : `타이밍을 놓쳤습니다 · 생명력 −${event.damage}`, 'hurt');
+        audio.play('hurt', event.attackDamage > 1 ? .72 : .6, event.attackDamage > 1 ? .82 : 1); burst('hurt');
         $('arena').classList.remove('hit'); void $('arena').offsetWidth; $('arena').classList.add('hit');
         if (navigator.vibrate) navigator.vibrate(40);
         break;
-      case 'phase': phaseUntil = clock() + 1900; tone(110, .5, 'triangle', .07, 165); break;
-      case 'turn': feedback('YOUR TURN', '빈틈입니다. 공격하세요.', '', 1100); tone(392, .2, 'sine', .04, 523); break;
+      case 'phase': phaseUntil = clock() + 1900; break;
+      case 'turn': feedback('YOUR TURN', '공격하거나 회복할 수 있습니다.', '', 1100); break;
       case 'won':
       case 'lost': finish(event.type === 'won'); break;
     }
@@ -182,18 +132,45 @@ function updateUI() {
   $('turn-tag').classList.toggle('boss', bossTurn);
   $('turn-tag').innerHTML = `<i></i> ${paused ? '일시 정지' : playerTurn ? '당신의 차례' : bossTurn ? '보스의 차례' : game.state === 'won' ? '전투 승리' : game.state === 'lost' ? '전투 종료' : '전투 대기'}`;
   $('attack').disabled = !playerTurn || paused;
+  $('items').disabled = !playerTurn || paused;
+  $('item-hint').textContent = `회복약 ×${game.potions}`;
+  $('potion-stock').textContent = `${game.potions} / ${POTIONS}`;
+  $('potion-effect').textContent = `생명력 +${HEAL_AMOUNT} · 최대 ${MAX_HP}칸`;
+  const potionReason = game.mode === 'practice' ? '연습 모드는 생명력이 무제한입니다.'
+    : game.potions === 0 ? '이번 전투의 회복약을 모두 사용했습니다.'
+      : game.hp >= MAX_HP ? '체력이 가득 차 있습니다.' : '';
+  $('use-potion').disabled = !playerTurn || paused || Boolean(potionReason);
+  $('potion-reason').textContent = potionReason || `지금 사용하면 ${Math.min(MAX_HP, game.hp + HEAL_AMOUNT)} / ${MAX_HP}로 회복합니다. 피격 기록은 유지됩니다.`;
   Object.values(parryButtons).forEach(button => { button.disabled = !bossTurn || paused; });
   $('attack-hint').textContent = playerTurn ? '빈틈 공격' : '내 차례';
   $('pause').disabled = !running();
   activeModes.forEach(button => { button.disabled = running() || !$('death-screen').hidden; });
   $('practice-attack-label').hidden = game.mode !== 'practice';
   $('practice-attack').disabled = running() || !$('death-screen').hidden;
+  updateParryCooldown(clock());
+}
+
+function updateParryCooldown(now) {
+  const remaining = game.state === 'boss' ? game.cooldownRemaining(now) : 0;
+  for (const [side, button] of Object.entries(parryButtons)) {
+    // Keep pointer capture / key releases alive. Combat enforces the lock;
+    // the second finger may still complete an already-started 80ms chord.
+    const joiningChord = game.pending && game.pending.side !== side && game.held.has(game.pending.side);
+    const cooling = remaining > 0 && !joiningChord;
+    button.classList.toggle('cooling', cooling);
+    button.setAttribute('aria-disabled', String(button.disabled || cooling));
+    const hint = joiningChord ? '동시 입력 가능' : cooling ? `대기 ${(Math.ceil(remaining / 100) / 10).toFixed(1)}초` : `${side === 'left' ? '왼쪽' : '오른쪽'} 공격 방어`;
+    const label = button.querySelector('small');
+    if (label.textContent !== hint) label.textContent = hint;
+    button.querySelector('.cooldown-fill').style.width = `${remaining / COOLDOWN * 100}%`;
+  }
 }
 
 function start() {
   if (!$('death-screen').hidden) return;
   if (paused) { togglePause(); return; }
   clearParryInputs();
+  audio.stop();
   unlockAudio();
   origin = performance.now(); lastFrame = origin;
   game.start();
@@ -204,10 +181,14 @@ function start() {
 }
 
 function act(kind) {
-  if (!running() || paused) return;
+  if (!running() || paused || $('item-dialog').open) return;
   unlockAudio();
-  if (kind === 'attack') game.attack(clock());
-  else game.tap(clock(), kind);
+  const now = clock();
+  if (kind === 'attack') game.attack(now);
+  else if (game.tap(now, kind) === 'cooldown') {
+    const remaining = game.cooldownRemaining(now);
+    feedback('재사용 대기', `${(Math.ceil(remaining / 100) / 10).toFixed(1)}초 후 다시 패링할 수 있습니다`, 'early', remaining);
+  }
   processEvents();
 }
 
@@ -243,6 +224,7 @@ function togglePause() {
     clearParryInputs();
     processEvents();
     pausedAt = clock(); paused = true;
+    $('item-dialog').close();
     $('overlay-eyebrow').textContent = 'TAKE A BREATH';
     $('overlay-title').innerHTML = '잠깐의 <em>쉼표.</em>';
     $('overlay-copy').innerHTML = '준비되면, 멈췄던 순간부터 이어갑니다.';
@@ -252,7 +234,7 @@ function togglePause() {
     $('start').innerHTML = '전투 계속 <svg><use href="#i-arrow"/></svg>';
     $('overlay').hidden = false;
     $('pause').setAttribute('aria-label', '전투 계속');
-    if (audio) audio.suspend().catch(() => {});
+    audio.pause();
   } else {
     origin = performance.now() - pausedAt; paused = false; lastFrame = performance.now();
     $('overlay').hidden = true;
@@ -270,13 +252,12 @@ async function finish(won) {
   $('overlay-eyebrow').textContent = nohit ? 'A FLAWLESS VICTORY' : won ? 'WARDEN DEFEATED' : 'EVERY ATTEMPT COUNTS';
   $('overlay-title').innerHTML = nohit ? '완벽한 <em>잔상.</em>' : won ? '순간을 <em>지배하다.</em>' : '다시, <em>한 번.</em>';
   $('overlay-copy').innerHTML = nohit ? '한 대도 맞지 않았습니다.<br>모든 순간이 당신의 것이었습니다.' : won ? '공허의 파수꾼을 쓰러뜨렸습니다.<br>다음 목표는 한 대도 맞지 않는 승리.' : '패턴은 달라져도, 빈틈은 있습니다.<br>다음에는 조금 더 정확하게.';
-  $('result-stats').innerHTML = `<div><span>전투 시간</span><b>${timeString(game.elapsed)}</b></div><div><span>퍼펙트</span><b>${game.perfects}</b></div><div><span>피격</span><b>${game.hits}</b></div>`;
+  $('result-stats').innerHTML = `<div><span>전투 시간</span><b>${timeString(game.elapsed)}</b></div><div><span>퍼펙트</span><b>${game.perfects}</b></div><div><span>피격</span><b>${game.hits}</b></div><div><span>회복약 사용</span><b>${game.potionsUsed}회</b></div>`;
   $('result-stats').hidden = false;
   $('start').innerHTML = '다시 도전 <svg><use href="#i-retry"/></svg>';
   $('overlay-foot').textContent = game.mode === 'practice' ? '연습 모드 · 최고 기록에 포함되지 않습니다' : '새로운 공격 조합이 기다립니다';
   $('overlay').hidden = !won;
   if (won) {
-    tone(523, .6, 'sine', .07, 1046);
     if (game.mode === 'challenge' && (!best || game.hits < best.hits || (game.hits === best.hits && game.elapsed < best.time))) {
       best = { hits: game.hits, time: game.elapsed };
       try { localStorage.setItem('afterimage-best-v1', JSON.stringify(best)); } catch { /* Private browsing can disable persistence. */ }
@@ -305,15 +286,32 @@ function renderBest() {
 }
 
 $('start').addEventListener('click', start);
+$('items').addEventListener('click', () => {
+  if (game.state !== 'player' || paused) return;
+  updateUI();
+  $('item-dialog').showModal();
+  ($('use-potion').disabled ? $('item-cancel') : $('use-potion')).focus();
+});
+$('item-cancel').addEventListener('click', () => $('item-dialog').close());
+$('item-dialog').addEventListener('close', () => {
+  if (!paused && running()) (game.state === 'player' ? $('items') : $('parry-left')).focus({ preventScroll: true });
+});
+$('use-potion').addEventListener('click', () => {
+  if (paused || !game.heal(clock())) return;
+  unlockAudio();
+  $('item-dialog').close();
+  processEvents();
+});
 $('pause').addEventListener('click', togglePause);
 $('sound').addEventListener('click', () => {
   sound = !sound;
   $('sound').setAttribute('aria-pressed', String(sound));
   $('sound').setAttribute('aria-label', sound ? '소리 끄기' : '소리 켜기');
+  audio.mute(!sound);
   if (sound) unlockAudio();
 });
 $('guide').addEventListener('change', event => { showGuide = event.target.checked; });
-ATTACK_COMPONENTS.forEach(component => $('practice-attack').add(new Option(component.name, component.type)));
+ATTACK_COMPONENTS.forEach(component => $('practice-attack').add(new Option(`${component.name}${component.damage > 1 ? ` · 필살기 −${component.damage} HP` : ''}`, component.type)));
 $('practice-attack').addEventListener('change', event => {
   if (running() || !$('death-screen').hidden) return;
   game = new Combat({ mode: game.mode, practiceAttack: event.target.value });
@@ -351,10 +349,12 @@ activeModes.forEach(button => button.addEventListener('click', () => {
     item.classList.toggle('selected', selected);
     item.setAttribute('aria-pressed', String(selected));
   });
-  $('mode-description').textContent = game.mode === 'practice' ? '무제한 생명력과 넓은 판정으로 타이밍을 익히세요.' : '5번의 기회. 한 대도 맞지 않는 승리에 도전하세요.';
+  $('mode-description').textContent = game.mode === 'practice' ? '무제한 생명력과 넓은 판정으로 타이밍을 익히세요.' : '생명력 5칸 · 회복약 2개. 한 대도 맞지 않는 승리에 도전하세요.';
   updateUI();
 }));
 document.addEventListener('keydown', event => {
+  // The native dialog owns focus and Escape; shortcuts must not spend a turn behind it.
+  if ($('item-dialog').open) return;
   if (event.repeat || /INPUT|TEXTAREA|SELECT/.test(event.target.tagName)) return;
   if (event.code === 'Escape') { togglePause(); return; }
   if (['KeyJ', 'KeyA', 'KeyD'].includes(event.code)) {
@@ -431,7 +431,7 @@ function drawScene(now) {
   glow.addColorStop(0, '#89946419'); glow.addColorStop(1, '#89946400');
   ctx.fillStyle = glow; ctx.fillRect(0, 0, width, height);
 
-  // Keep the procedural arena behind the illustrated combatants.
+  // Keep the procedural arena behind the combatants.
   const horizon = height * .61;
   for (let i = 0; i < 11; i++) {
     const x = (i / 10) * width;
@@ -466,6 +466,23 @@ function drawScene(now) {
     ctx.restore();
   });
 
+  const special = game.sequence.find(h => h.damage > 1 && now >= h.windupAt && now < h.at + 420);
+  const specialIntensity = specialIntensityAt(special, now);
+  const specialWarning = special && !special.resolved && !paused && game.state === 'boss';
+  $('special-warning').hidden = !specialWarning;
+  $('arena').dataset.special = specialWarning ? String(special.damage) : '';
+  if (specialWarning && $('special-name').textContent !== special.name) {
+    $('special-name').textContent = special.name;
+    $('special-risk').textContent = `필살기 · 생명력 −${special.damage}`;
+  }
+  if (specialIntensity > 0) {
+    // Darken the environment before drawing characters, cues, and projectiles.
+    ctx.fillStyle = `rgba(2,3,8,${specialIntensity * (special.damage === 3 ? .87 : .76)})`;
+    ctx.fillRect(0, 0, width, height);
+    const rim = ctx.createRadialGradient(width * .55, height * .5, width * .15, width * .55, height * .5, width * .75);
+    rim.addColorStop(0, '#5e132000'); rim.addColorStop(1, `rgba(140,22,39,${specialIntensity * .4})`);
+    ctx.fillStyle = rim; ctx.fillRect(0, 0, width, height);
+  }
   const hit = game.state === 'boss' ? game.nextHit() : null;
   const delta = hit ? hit.at - now : Infinity;
   const windup = hit && now >= hit.windupAt;
@@ -516,17 +533,27 @@ function drawScene(now) {
   if (reducedMotion) { shiftX = 0; shiftY = 0; lean = 0; }
   const bossArtReady = characterArt.boss.complete && characterArt.boss.naturalWidth > 0;
   // Reserve space for a raised blade as well as the resting silhouette.
-  const bossTop = bossArtReady ? 220 : 110, bossBottom = bossArtReady ? 168 : 125;
-  const bossScale = Math.min(scale * movement.depth, (height - 88 - hudBottom) / (bossTop + bossBottom));
+  const bossTop = fighters?.available ? 265 : 150, bossBottom = 160;
+  const framingTop = hudBottom + 48 * specialIntensity;
+  const bossScale = Math.min(scale * movement.depth, (height - 88 - framingTop) / (bossTop + bossBottom));
   const edge = Math.min(width / 2, (bossArtReady ? 235 : 230) * bossScale + 12);
   const bossX = Math.max(edge, Math.min(width - edge, width * .56 + shiftX * scale));
-  const minBossY = hudBottom + bossTop * bossScale + 8;
+  const minBossY = framingTop + bossTop * bossScale + 8;
   const maxBossY = height - 80 - bossBottom * bossScale;
   const bossY = Math.max(minBossY, Math.min(maxBossY, height * .49 + shiftY * scale));
-  const floatY = Math.sin(t * 1.5) * 4 * scale;
+  const floatY = 0;
   const groundY = bossArtReady
     ? Math.max(minBossY, Math.min(maxBossY, height * .49)) + (bossBottom - 5) * bossScale + (movement.depth - 1) * 50 * scale
     : height * .7 + (movement.depth - 1) * 50 * scale;
+  if (specialIntensity > 0) {
+    const aura = ctx.createRadialGradient(bossX, bossY, 0, bossX, bossY, 190 * bossScale);
+    aura.addColorStop(0, `rgba(190,39,62,${specialIntensity * .3})`); aura.addColorStop(1, '#bd273e00');
+    ctx.fillStyle = aura; ctx.fillRect(0, 0, width, height);
+    ctx.save(); ctx.globalAlpha = specialIntensity * .7;
+    ellipse(bossX, groundY, 90 * bossScale, 17 * bossScale, '#cb6576');
+    ellipse(bossX, groundY, 105 * bossScale, 21 * bossScale, '#ad526760');
+    ctx.restore();
+  }
   ellipse(bossX, groundY, (pose === 'leap' ? 52 : 70) * bossScale, 12 * bossScale, '#00000035', true);
   // A shrinking shadow and a detached body make altitude distinct from depth.
   if (movement.y < -12 && !reducedMotion) {
@@ -555,177 +582,69 @@ function drawScene(now) {
     }
   }
 
-  ctx.save(); ctx.translate(bossX, bossY + floatY); ctx.scale(bossScale, bossScale); ctx.rotate(lean);
-  const hurtFlash = flashKind === 'attack' && now - flashAt < 130;
-  const fury = pose === 'fury';
-  const armor = hurtFlash ? '#a6ac7e' : fury ? '#6c4438' : '#465442';
-  const edges = fury ? '#f0a080aa' : game.phase === 2 ? '#a4845755' : '#a5ad7e55';
-  const core = parryWindow ? '#fff0b4' : ranged ? '#a5dfff' : fury ? '#f5a082' : warning ? '#e7bd80' : game.phase === 2 ? '#d19567' : '#c6ba7f';
-  const bossHands = {};
-  if (bossArtReady) {
-    ctx.save();
-    // Face the player. Art-side hinges are mirrored, but guard names, colors
-    // and projectile lanes must still refer to the player's screen sides.
-    ctx.scale(-1, 1);
-    const poses = Object.fromEntries(['left', 'right'].map(hand => {
-      const screenHand = hand === 'left' ? 'right' : 'left';
-      const pose = weaponPoseAt(poseHit, now, screenHand, reducedMotion);
-      pose.angle *= -1; pose.x *= -1;
-      if (!reducedMotion) pose.angle += Math.sin(t * 1.7 + (hand === 'left' ? 0 : 1.4)) * .025;
-      return [hand, pose];
-    }));
-    if (!reducedMotion) {
-      const breath = Math.sin(t * 1.7) * .009;
-      ctx.scale(1 - breath * .4, 1 + breath);
-      ctx.rotate((poses.left.angle + poses.right.angle) * -.025);
-    }
-    if (hurtFlash) ctx.filter = 'brightness(1.65)';
-    drawArtRig(characterArt.boss, bossRig, poses, artSide => {
-      const side = artSide === 'left' ? 'right' : 'left';
-      ctx.filter = 'none';
-      const wrist = artSide === 'left' ? [-62, 4] : [49, 12];
-      const position = ctx.getTransform().transformPoint({ x: wrist[0], y: wrist[1] });
-      bossHands[side] = [position.x / canvas.width, position.y / canvas.height];
-      if (glowHit && (glowHit.guard === side || glowHit.guard === 'both')) {
-        ctx.save(); ctx.globalCompositeOperation = 'screen';
-        ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-        const color = parryWindow ? '#fff0b4' : guardColors[side];
-        const arm = artSide === 'left' ? [[-38, -57], [-52, -42], [-62, -8]] : [[27, -47], [40, -25], [49, 3]];
-        const blade = artSide === 'left' ? [[-67, 24], [-101, 119]] : [[56, 32], [90, 120]];
-        ctx.shadowColor = color; ctx.shadowBlur = reducedMotion ? 0 : Math.max(8, 18 * bossScale);
-        line(arm, `${color}30`, 24);
-        line(arm, `${color}88`, 10);
-        line(arm, color, 2.5);
-        line(blade, `${color}55`, 16);
-        line(blade, color, parryWindow ? 7 : 5);
-        ctx.restore();
-      }
-      if (ranged && motionHit && now < motionHit.launchAt && (motionHit.guard === side || motionHit.guard === 'both')) {
-        const radius = 5 + anticipation * 14, color = guardColors[side];
-        ellipse(...wrist, radius * 1.5, radius * 1.5, `${color}35`, true);
-        ellipse(...wrist, radius, radius, color);
-        ellipse(...wrist, radius * .45, radius * .45, '#dcfff7', true);
-      }
-    });
-    ctx.restore();
-  } else {
-    // Geometry remains a fallback if an image cannot load.
-    // Floating stone skirt, torso, shoulders and an empty crown.
-    polygon([[-31, 29], [-51, 117], [-9, 94], [0, 36]], '#263a30', edges);
-    polygon([[8, 36], [19, 102], [53, 121], [36, 25]], '#344735', edges);
-    polygon([[-8, 38], [-12, 96], [6, 111], [23, 71]], '#1d3028', edges);
-    polygon([[-43, -37], [-20, -52], [25, -48], [44, -29], [28, 35], [0, 51], [-30, 31]], armor, edges);
-    polygon([[3, -49], [44, -29], [28, 35], [0, 51]], '#2d4032', edges);
-    polygon([[-43, -34], [-61, -47], [-80, -19], [-47, -5]], '#4b5942', edges);
-    polygon([[40, -35], [66, -46], [79, -15], [46, -4]], '#394b38', edges);
-    polygon([[-17, -58], [-22, -88], [-7, -80], [0, -105], [10, -79], [26, -91], [19, -57], [1, -47]], '#3e503b', edges);
-    line([[-9, -68], [1, -63], [11, -68]], core, 2);
-    // Right/left refer to screen sides, preserving the original right-side sword.
-    // Each arm winds up and swings independently, including alternating combos.
-    for (const hand of ['left', 'right']) {
-      const side = hand === 'right' ? 1 : -1;
-      const preparing = motionHit?.hand === hand || motionHit?.guard === 'both';
-      const striking = !ranged && (lastImpact?.hand === hand || lastImpact?.guard === 'both');
-      let lift = preparing ? anticipation : 0;
-      const type = striking ? lastImpact.type : preparing ? motionHit.type : 'cleave';
-      const stabbing = ['thrust', 'rush', 'retreat', 'recoil'].includes(type);
-      const sweeping = ['sweep', 'spin', 'low-sweep', 'flurry'].includes(type);
-      // The mechanical feint ratchets in steps; its final attack remains smooth.
-      if (type === 'recoil' && motionHit && now < motionHit.commitAt && !reducedMotion) lift = Math.floor(lift * 5) / 5;
-      const cock = ranged ? .95 : type === 'drag' ? -.4 : stabbing ? .32 : sweeping ? .7 : 1.25;
-      const arc = type === 'drag' ? -2.4 : stabbing ? .45 : sweeping ? 1.8 : 2.4;
-      const extension = striking && stabbing ? Math.sin(strikeProgress * Math.PI) : 0;
-      const rotation = striking ? -cock * (1 - strikeProgress) + Math.sin(strikeProgress * Math.PI) * arc : -lift * cock;
-      const lit = lift > .2 || striking;
-      const low = ['drag', 'wave', 'low-sweep'].includes(type) ? 22 * (striking ? 1 - strikeProgress : lift) : 0;
-      ctx.save(); ctx.scale(side, 1); ctx.translate(63 - extension * 25, -18 + extension * 36 + low); ctx.rotate(-.18 + rotation);
-      const signal = glowHit && (glowHit.guard === hand || glowHit.guard === 'both') ? (parryWindow ? '#fff0b4' : guardColors[hand]) : null;
-      if (signal) { ctx.shadowColor = signal; ctx.shadowBlur = reducedMotion ? 0 : 15 * bossScale; }
-      polygon([[-11, 0], [6, -5], [14, 47], [-1, 54], [-15, 32]], signal ? `${signal}88` : lit ? '#69734f' : '#445740', signal || (lit ? '#c9c49a' : edges));
-      line([[8, 29], [27, 59]], '#75815b', 5);
-      line([[12, 62], [40, 47]], lit ? '#e3d3a0' : '#8f9567', 4);
-      polygon([[23, 55], [35, 49], [92, 156], [73, 150]], lit ? '#c4bc89' : '#777f60', '#c7c49a66');
-      polygon([[35, 49], [92, 156], [79, 144]], signal || (lit ? '#f1dfad' : '#a3ac89'));
-      if (type === 'drag' && preparing) {
-        line([[73, 151], [85, 161], [90, 150], [102, 164]], '#eab87b99', 1.5);
-      }
-      ctx.restore();
-    }
-  }
-  if (fury) {
-    polygon([[0, -43], [7, -35], [0, -27], [-7, -35]], '#f3a58b');
-  }
-  if (!bossArtReady && ranged && motionHit && now < motionHit.launchAt) {
-    for (const side of [-1, 1]) {
-      if (motionHit.guard === 'both' || motionHit.hand === (side < 0 ? 'left' : 'right')) {
-        const radius = 5 + anticipation * 14;
-        const color = guardColors[side < 0 ? 'left' : 'right'];
-        ellipse(side * 100, 12, radius * 1.5, radius * 1.5, `${color}35`, true);
-        ellipse(side * 100, 12, radius, radius, color);
-        ellipse(side * 100, 12, radius * .45, radius * .45, '#dcfff7', true);
-      }
-    }
-  }
-
-  // The concept's chest core sits above the image's waist anchor.
-  if (bossArtReady) ctx.translate(0, -58);
-  const aura = ctx.createRadialGradient(0, 0, 3, 0, 0, parryWindow ? 85 : 60);
-  aura.addColorStop(0, `${core}40`); aura.addColorStop(1, `${core}00`);
-  ctx.fillStyle = aura; ctx.fillRect(-90, -90, 180, 180);
-  if (!bossArtReady) {
-    polygon([[0, -23], [17, 0], [0, 23], [-17, 0]], '#182d25', '#a4a577');
-    polygon([[0, -12], [8, 0], [0, 12], [-8, 0]], core);
-  }
-  if (parryWindow) {
-    ctx.shadowColor = core; ctx.shadowBlur = 18;
-    line([[-29, 0], [-18, 0]], core, 2); line([[18, 0], [29, 0]], core, 2);
-    ctx.shadowBlur = 0;
-  }
-  if (showGuide && warning && hit?.launchAt == null) timingRing(delta, parryWindow);
-  ctx.restore();
-
-  // Small, readable player silhouette and parry pose.
   const attackProgress = Math.max(0, Math.min(1, (now - game.attackAt) / 520));
   const dash = reducedMotion ? 0 : Math.sin(attackProgress * Math.PI) * width * .12;
   const playerX = width * .3 + dash, playerY = height * .76 - dash * .7;
   const parrying = ['parry', 'perfect'].includes(flashKind) && now - flashAt < 350;
-  const playerArtReady = characterArt.player.complete && characterArt.player.naturalWidth > 0;
-  const playerGuardY = playerY - (playerArtReady ? 44 : 18) * scale;
-  ellipse(width * .3, playerArtReady ? height * .76 + 39 * scale : height * .82, 30 * scale, 6 * scale, '#00000040', true);
-  ctx.save(); ctx.translate(playerX, playerY); ctx.scale(scale, scale);
-  if (playerArtReady) {
-    ctx.save();
-    const action = playerPoseAt(now, game.attackAt, parrying ? flashAt : -Infinity, flashKind === 'hurt' ? flashAt : -Infinity, reducedMotion);
-    const idle = reducedMotion ? 0 : Math.sin(t * 2.1) * .035;
-    ctx.translate(-action.recoil * 9, action.recoil * 4);
-    ctx.rotate(-Math.sin(attackProgress * Math.PI) * (reducedMotion ? 0 : .12) + action.recoil * .12);
-    const breath = reducedMotion ? 0 : Math.sin(t * 2.1) * .009;
-    ctx.scale(1, 1 + breath);
-    if (flashKind === 'hurt' && now - flashAt < 130) ctx.filter = 'brightness(1.4) sepia(.4)';
-    drawArtRig(characterArt.player, playerRig, {
-      left: { angle: action.sword - action.guard * 2.05 + idle, x: action.guard * 4, y: -action.guard, scaleY: 1 - action.guard * .12 },
-      right: { angle: -action.guard * .65 - action.sword * .14 - idle, x: 0, y: 0, scaleY: 1 },
-    });
-    ctx.restore();
+  const playerGuardY = playerY - 44 * scale;
+  const playerGroundY = playerY + 39 * scale;
+  ellipse(playerX, playerGroundY, 30 * scale, 6 * scale, '#00000040', true);
+  let anchors;
+  const use3D = Boolean(fighters?.available);
+  canvas.dataset.renderer = use3D ? 'webgl2' : 'fallback';
+  $('render-notice').hidden = use3D;
+  if (use3D) {
+    anchors = fighters.draw(ctx, { width, height, bossX, bossY: bossY + floatY, bossScale, bossLean: lean,
+      playerX, playerY, scale, hit: poseHit, glowHit, parryWindow, now,
+      attackAt: game.attackAt, parryAt: parrying ? flashAt : -Infinity,
+      hurtAt: flashKind === 'hurt' ? flashAt : -Infinity, healAt: game.healAt, reduced: reducedMotion });
   } else {
-    polygon([[-9, -27], [-19, 13], [-35, 33], [-9, 23], [6, 4], [6, -21]], '#a4ae99', '#c8ceaf88');
-    polygon([[-9, -27], [-19, 13], [-35, 33], [-23, 1]], '#6e8271');
-    line([[-7, 8], [-8, 39]], '#a0b4a3', 5); line([[2, 6], [13, 35]], '#718c7b', 5);
-    polygon([[-13, -44], [-2, -49], [7, -39], [3, -29], [-9, -29]], '#c7ceaf', '#d8dbbf');
-    line([[-2, -38], [7, -36]], '#415b4d', 2);
-    line([[1, -22], [12, -9], [24, parrying ? -26 : -9]], '#b8c9af', 5);
-    const swordTip = parrying ? [7, -76] : [54, -57];
-    line([[19, parrying ? -20 : -6], swordTip], '#e4e3c6', 3);
-    line([[17, parrying ? -32 : -19], [31, parrying ? -29 : -9]], '#c0b788', 2);
+    // Compatibility fallback only. No cutout animation is used by the 3D renderer.
+    ctx.save(); ctx.translate(bossX, bossY); ctx.scale(-bossScale, bossScale);
+    if (bossArtReady) ctx.drawImage(characterArt.boss, -108, -138, 204, 306);
+    else polygon([[-48, 155], [-45, -85], [0, -135], [45, -85], [48, 155]], '#65755b', '#cbbb86');
+    ctx.restore();
+    ctx.save(); ctx.translate(playerX, playerY); ctx.scale(scale, scale);
+    if (characterArt.player.naturalWidth) ctx.drawImage(characterArt.player, -70, -118, 110, 165);
+    else polygon([[-15, 39], [-20, -80], [0, -110], [20, -80], [15, 39]], '#cfc6a9');
+    ctx.restore();
+    anchors = { hands: { left: [bossX - 62 * bossScale, bossY], right: [bossX + 62 * bossScale, bossY] }, core: [bossX, bossY - 58 * bossScale], playerGuard: [playerX, playerGuardY] };
+    if (glowHit) for (const side of ['left', 'right']) {
+      if (glowHit.guard !== 'both' && glowHit.guard !== side) continue;
+      const direction = side === 'left' ? -1 : 1, [x, y] = anchors.hands[side];
+      line([[bossX + direction * 40 * bossScale, bossY - 50 * bossScale], [x, y], [x + direction * 32 * bossScale, y + 108 * bossScale]], parryWindow ? '#fff0b4' : guardColors[side], 4);
+    }
+  }
+  const bossHands = Object.fromEntries(Object.entries(anchors.hands).map(([side, point]) => [side, [point[0] / width, point[1] / height]]));
+  if (ranged && motionHit && now < motionHit.launchAt) {
+    for (const side of ['left', 'right']) {
+      if (motionHit.guard !== side && motionHit.guard !== 'both') continue;
+      const [x, y] = anchors.hands[side], color = guardColors[side];
+      const radius = (5 + anticipation * 14) * bossScale;
+      ellipse(x, y, radius * 1.5, radius * 1.5, color + '35', true);
+      ellipse(x, y, radius, radius, color);
+      ellipse(x, y, radius * .4, radius * .4, '#dcfff7', true);
+    }
+  }
+  if (showGuide && warning && hit?.launchAt == null) {
+    ctx.save(); ctx.translate(...anchors.core); ctx.scale(bossScale, bossScale);
+    timingRing(delta, parryWindow); ctx.restore();
   }
   if (parrying) {
-    ctx.beginPath(); ctx.arc(6, playerArtReady ? -44 : -17, 44, -1.5, .4); ctx.strokeStyle = '#e8d9a4'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.save(); ctx.translate(...anchors.playerGuard);
+    ctx.beginPath(); ctx.arc(0, 0, 38 * scale, -1.7, .5);
+    ctx.strokeStyle = '#e8d9a4'; ctx.lineWidth = 2; ctx.stroke(); ctx.restore();
   }
-  if (playerArtReady && attackProgress > 0 && attackProgress < 1 && !reducedMotion) {
-    ctx.globalAlpha = Math.sin(attackProgress * Math.PI);
-    ctx.beginPath(); ctx.arc(0, -50, 65, -1.8, .3); ctx.strokeStyle = '#ead3a3'; ctx.lineWidth = 3; ctx.stroke();
+  const healProgress = (now - game.healAt) / ITEM_USE_MS;
+  if (healProgress >= 0 && healProgress < 1) {
+    ctx.save();
+    ctx.globalAlpha = reducedMotion ? .6 : Math.sin(healProgress * Math.PI);
+    const rise = reducedMotion ? 0 : healProgress * 65 * scale;
+    ellipse(playerX, playerGroundY - rise, 32 * scale, 8 * scale, '#a5edc0');
+    line([[playerX - 6 * scale, playerY - 80 * scale - rise], [playerX + 6 * scale, playerY - 80 * scale - rise]], '#d2ffe3', 2);
+    line([[playerX, playerY - 86 * scale - rise], [playerX, playerY - 74 * scale - rise]], '#d2ffe3', 2);
+    ctx.restore();
   }
-  ctx.restore();
 
   if (ranged && now >= poseHit.launchAt && !['parry', 'perfect'].includes(poseHit.result)) {
     // Keep the release position fixed while the arm recoils. Normalized points
@@ -755,7 +674,7 @@ function drawScene(now) {
       if (lastImpact.type === 'spin') ellipse(bossX, bossY + 50 * bossScale, 125 * bossScale, 26 * bossScale, '#c5c58d');
     } else if (lastImpact.type === 'drag') {
       line([[bossX + side * 70 * bossScale, bossY + 150 * bossScale], [playerX, playerY - 50 * scale]], '#f1d3a1', 4);
-    } else if (lastImpact.type === 'fury') {
+    } else if (lastImpact.type === 'fury' || lastImpact.type === 'execution') {
       for (const direction of [-1, 1]) line([[bossX + direction * 65 * bossScale, bossY - 70 * bossScale], [playerX - direction * 15 * scale, playerY + 20 * scale]], '#efb095', 4);
     } else if (lastImpact.type !== 'wave') {
       const thrust = ['thrust', 'rush', 'retreat', 'recoil'].includes(lastImpact.type);
@@ -784,10 +703,10 @@ function drawScene(now) {
   if (game.state === 'boss' && !paused) {
     const remaining = game.sequence.filter(h => !h.resolved).length;
     const rangedCaption = hit?.launchAt != null && windup ? now < hit.launchAt ? `${hit.name} 충전 · 도착할 때 패링` : `${hit.name} 접근 · 도착할 때 패링` : '';
-    $('timing-caption').textContent = parryWindow ? '지금, 패링!' : rangedCaption || (warning ? `${hit.name} · 빛나는 무기를 보세요` : windup && remaining ? '빛나는 팔과 무기를 읽고 기다리세요' : remaining ? '보스가 공격을 준비합니다' : '공격을 막아냈다면, 다음 빈틈을 노리세요');
+    $('timing-caption').textContent = healProgress >= 0 && healProgress < 1 ? '회복 중 · 곧 보스가 반격합니다' : parryWindow ? '지금, 패링!' : rangedCaption || (warning ? `${hit.name} · 빛나는 무기를 보세요` : windup && remaining ? '빛나는 팔과 무기를 읽고 기다리세요' : remaining ? '보스가 공격을 준비합니다' : '공격을 막아냈다면, 다음 빈틈을 노리세요');
     $('timing-caption').style.color = parryWindow ? '#f6dfa1' : hit?.launchAt != null ? '#a5dfff' : hit?.type === 'fury' ? '#edb098' : '#b3c0a7';
   } else {
-    $('timing-caption').textContent = game.state === 'player' ? '빈틈입니다. 공격하세요.' : '';
+    $('timing-caption').textContent = game.state === 'player' ? '공격하거나 아이템을 선택하세요.' : '';
     $('timing-caption').style.color = '#b3c0a7';
   }
 }
@@ -804,27 +723,28 @@ function frame(realTime) {
     game.update(now);
     if (game.events.length) processEvents();
     if (game.state === 'boss') {
-      const hit = game.nextHit();
-      if (hit && hit.at - now < TELEGRAPH_MS && !cueSeen.has(hit)) {
-        cueSeen.add(hit); tone(310, .08, 'sine', .025, 440);
-      }
       for (const strike of game.sequence) {
-        if (strike.launchAt != null && now >= strike.launchAt && !launchSeen.has(strike)) {
-          launchSeen.add(strike); tone(440, .18, 'sine', .04, 700);
+        // Follow the actual blade swing, not the earlier timing-guide cue.
+        const release = strike.launchAt ?? strike.at;
+        const swingAt = release - Math.min(160, (release - strike.commitAt) * .3);
+        if (now >= swingAt && !swingSeen.has(strike)) {
+          swingSeen.add(strike);
+          if (now < release && !strike.resolved) audio.play('swing', strike.damage > 1 ? .4 : strike.guard === 'both' ? .28 : .22, strike.damage > 1 ? .72 : strike.guard === 'both' ? .88 : 1);
         }
-        if (now >= strike.at && !impactSeen.has(strike)) {
-          impactSeen.add(strike);
-          if (strike.result !== 'perfect' && strike.result !== 'parry') tone(120, .14, 'triangle', .07, 50);
+        if (strike.launchAt != null && now >= strike.launchAt && !launchSeen.has(strike)) {
+          launchSeen.add(strike);
+          if (now < strike.at && !strike.resolved) audio.play('wave', .36, strike.guard === 'both' ? .85 : 1);
         }
       }
     }
   }
   drawScene(now);
   $('feedback').classList.toggle('visible', now < feedbackUntil && $('overlay').hidden);
-  $('phase-toast').classList.toggle('visible', now < phaseUntil && $('overlay').hidden);
+  $('phase-toast').classList.toggle('visible', now < phaseUntil && $('overlay').hidden && $('special-warning').hidden);
   $('arena').classList.toggle('parried', ['parry', 'perfect'].includes(flashKind) && now - flashAt < 250);
-  for (const button of Object.values(parryButtons)) button.querySelector('.cooldown-fill').style.width = `${Math.max(0, 1 - (now - game.lastTap) / COOLDOWN) * 100}%`;
+  updateParryCooldown(now);
   requestAnimationFrame(frame);
 }
 
+$('parry-cooldown-rule').textContent = `패링 후 ${(COOLDOWN / 1000).toFixed(1)}초 대기 · 좌우 공통 · 성공·실패 모두 적용`;
 resize(); renderBest(); updateUI(); requestAnimationFrame(frame);

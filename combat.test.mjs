@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Combat, MODES, COOLDOWN, CHORD_MS, ATTACK_COMPONENTS, TELEGRAPH_MS, MAX_STRIKES } from './combat.mjs';
-import { MOTIONS, motionAt, weaponPoseAt, playerPoseAt } from './motion.mjs';
+import { Combat, MODES, COOLDOWN, CHORD_MS, ATTACK_COMPONENTS, TELEGRAPH_MS, MAX_STRIKES, ITEM_USE_MS } from './combat.mjs';
+import { MOTIONS, motionAt, attackPoseAt, playerPoseAt, specialIntensityAt } from './motion.mjs';
 
 function seeded(seed) {
   return () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
@@ -17,29 +17,124 @@ function parry(game, now, hit = game.nextHit()) {
   return result;
 }
 
-test('illustrated weapons move only the attacking arms, reach impact on time, and recover continuously without changing combat', () => {
-  const rest = weaponPoseAt(null, 0, 'left');
+test('potions consume one player turn, heal up to the cap, preserve hit records, and reset only for a new battle', () => {
+  let rolls = 0;
+  const game = new Combat({ random: () => { rolls++; return 0; } });
+  assert.equal(game.heal(0), false, 'cannot use before starting');
+  game.start(); game.drain();
+  assert.equal(game.heal(0), false, 'full health cannot waste a potion or turn');
+  assert.equal(game.round, 0); assert.equal(rolls, 0); assert.equal(game.potions, 2);
+  game.attack(100);
+  assert.equal(game.heal(101), false, 'cannot heal in the boss turn');
+  game.update(game.endAt);
+  assert.equal(game.hp, 4);
+  const usedAt = game.time + 1, previousPlan = game.sequence, previousRolls = rolls, bossHp = game.bossHp;
+  game.drain();
+  assert.equal(game.heal(usedAt), true);
+  assert.equal(game.hp, 5, 'cap gives only one health when one is missing');
+  assert.equal(game.potions, 1); assert.equal(game.potionsUsed, 1);
+  assert.equal(game.round, 2); assert.equal(game.state, 'boss');
+  assert.equal(game.hits, 1, 'healing never restores the no-hit record');
+  assert.equal(game.bossHp, bossHp); assert.equal(game.attackAt, 100, 'healing cannot damage or animate an attack');
+  assert.deepEqual(game.drain(), [{ type: 'heal', at: usedAt, amount: 1 }]);
+  assert.notEqual(game.sequence, previousPlan); assert.ok(rolls > previousRolls, 'fresh random components after an item turn');
+  assert.equal(game.sequence[0].windupAt, usedAt + ITEM_USE_MS, 'finish using the item before telegraphing');
+  const plan = structuredClone(game.sequence), plannedRolls = rolls;
+  assert.equal(game.heal(usedAt), false, 'double activation cannot use the second potion');
+  assert.equal(game.attack(usedAt), false, 'the same turn cannot also attack');
+  assert.equal(game.potions, 1); assert.equal(rolls, plannedRolls);
+  assert.deepEqual(game.sequence, plan);
+  game.update(game.endAt); // 4 HP
+  game.attack(game.time + 1); game.update(game.endAt); // 3 HP
+  const hits = game.hits;
+  assert.equal(game.heal(game.time + 1), true);
+  assert.equal(game.hp, 5); assert.equal(game.potions, 0); assert.equal(game.potionsUsed, 2);
+  assert.equal(game.hits, hits);
+  game.update(game.endAt);
+  const round = game.round;
+  assert.equal(game.heal(game.time + 1), false, 'empty inventory cannot consume a turn');
+  assert.equal(game.state, 'player'); assert.equal(game.round, round);
+  while (game.state !== 'lost') { game.attack(game.time + 1); game.update(game.endAt); }
+  assert.equal(game.heal(game.time + 1), false, 'no revival after death');
+  game.start();
+  assert.equal(game.hp, 5); assert.equal(game.potions, 2); assert.equal(game.potionsUsed, 0);
+  assert.equal(game.healAt, -Infinity); assert.equal(game.hits, 0);
+  game.damageBoss(240);
+  assert.equal(game.heal(1), false, 'finished battles cannot use items');
+  const practice = new Combat({ mode: 'practice' }); practice.start();
+  assert.equal(practice.heal(0), false); assert.equal(practice.potions, 2);
+});
+
+test('special strikes deal 2 or 3 HP once, remain fully parryable, and telegraph on the paused combat clock', () => {
+  for (const [type, damage] of [['judgment', 2], ['execution', 3]]) {
+    const index = ATTACK_COMPONENTS.findIndex(c => c.type === type);
+    for (const mode of Object.keys(MODES)) for (const phase of [1, 2]) {
+      for (const input of ['miss', 'wrong', 'perfect', 'parry', 'lethal']) {
+        const rolls = [0, (index + .5) / ATTACK_COMPONENTS.length];
+        const game = new Combat({ mode, practiceAttack: type, random: () => rolls.shift() ?? .5 });
+        game.start();
+        if (phase === 2) game.damageBoss(120);
+        game.attack(0); game.drain();
+        const hit = game.sequence[0], bossHp = game.bossHp;
+        assert.equal(hit.type, type); assert.equal(hit.damage, damage);
+        assert.ok(hit.at - hit.windupAt >= 1500, 'specials retain readable preparation even in phase II');
+        const shownAt = hit.windupAt + 400, shown = specialIntensityAt(hit, shownAt);
+        assert.equal(specialIntensityAt(hit, hit.windupAt - 1), 0, 'do not reveal future attacks');
+        assert.equal(shown, 1);
+        assert.equal(specialIntensityAt(hit, shownAt), shown, 'same paused clock freezes darkness');
+        for (const at of [hit.windupAt, hit.windupAt + 360, hit.at, hit.at + 420]) {
+          assert.ok(Math.abs(specialIntensityAt(hit, at - .001) - specialIntensityAt(hit, at + .001)) < .001);
+        }
+        if (input === 'lethal') game.hp = 1;
+        if (input === 'perfect' || input === 'parry') {
+          assert.equal(parry(game, hit.at + (input === 'parry' ? MODES[mode].window - 1 : 0), hit), input);
+        } else if (input === 'wrong') {
+          const side = hit.guard === 'left' ? 'right' : 'left';
+          game.tap(hit.at, side); assert.equal(game.release(hit.at, side), 'wrong');
+        }
+        const blocked = input === 'perfect' || input === 'parry';
+        game.update(hit.at + MODES[mode].window + 1);
+        const expectedDamage = blocked || mode === 'practice' ? 0 : damage;
+        assert.equal(game.hp, Math.max(0, (input === 'lethal' ? 1 : 5) - expectedDamage));
+        assert.equal(game.bossHp, bossHp, 'special parries cannot damage the boss');
+        assert.equal(game.hits, blocked ? 0 : 1, 'one special is one recorded hit');
+        const hurts = game.drain().filter(e => e.type === 'hurt');
+        assert.equal(hurts.length, blocked ? 0 : 1);
+        if (!blocked) assert.equal(hurts[0].damage, mode === 'practice' ? 0 : damage);
+        if (input === 'lethal' && mode === 'challenge') assert.equal(game.state, 'lost');
+        const hp = game.hp;
+        game.update(hit.at + MODES[mode].window + 2);
+        assert.equal(game.hp, hp, 'do not apply damage again on subsequent frames');
+        assert.equal(specialIntensityAt(hit, hit.at + 420), 0, 'darkness clears after the strike');
+      }
+    }
+  }
+  assert.equal(specialIntensityAt({ damage: 1, windupAt: 0, at: 1000 }, 500), 0);
+});
+
+test('attack animation weights select the correct arms, reach impact on time, and recover continuously without changing combat', () => {
+  const rest = attackPoseAt(null, 0, 'left');
   for (const component of ATTACK_COMPONENTS) for (const random of [0, .5, .99]) {
     const game = new Combat({ mode: 'practice', practiceAttack: component.type, random: () => random });
     game.start(); game.attack(0);
     for (const hit of game.sequence) {
       const original = JSON.stringify(hit), release = hit.launchAt ?? hit.at;
       const hand = hit.hand, other = hand === 'left' ? 'right' : 'left';
-      const preparation = weaponPoseAt(hit, release - 170, hand);
-      assert.ok(Math.abs(preparation.angle) > .1, `${hit.type} must actually move its arm`);
-      assert.equal(weaponPoseAt(hit, release, hand).swing, 1, 'full strike at hit / launch, never after it');
-      assert.deepEqual(weaponPoseAt(hit, release + 240, hand), rest);
-      assert.deepEqual(weaponPoseAt(hit, hit.windupAt, hand), rest);
-      assert.deepEqual(weaponPoseAt(hit, release, hand, true), rest);
-      if (hit.guard !== 'both') assert.deepEqual(weaponPoseAt(hit, release - 170, other), rest, 'do not expose the next combo hand');
-      else assert.equal(weaponPoseAt(hit, release, other).swing, 1);
+      const preparation = attackPoseAt(hit, release - 170, hand);
+      assert.ok(preparation.prepare > .1, `${hit.type} must actually move its arm`);
+      assert.equal(attackPoseAt(hit, release, hand).swing, 1, 'full strike at hit / launch, never after it');
+      assert.deepEqual(attackPoseAt(hit, release + 240, hand), rest);
+      assert.deepEqual(attackPoseAt(hit, hit.windupAt, hand), rest);
+      assert.deepEqual(attackPoseAt(hit, release, hand, true), rest);
+      if (hit.guard !== 'both') assert.deepEqual(attackPoseAt(hit, release - 170, other), rest, 'do not expose the next combo hand');
+      else assert.equal(attackPoseAt(hit, release, other).swing, 1);
       for (const boundary of [hit.windupAt, hit.commitAt, release - 160, release, release + 240]) {
-        const before = weaponPoseAt(hit, boundary - .001, hand), after = weaponPoseAt(hit, boundary + .001, hand);
+        const before = attackPoseAt(hit, boundary - .001, hand), after = attackPoseAt(hit, boundary + .001, hand);
         for (const key of Object.keys(rest)) assert.ok(Math.abs(before[key] - after[key]) < .001, `${hit.type}: continuous ${key} at ${boundary}`);
       }
-      const pose = weaponPoseAt(hit, release - 100, hand);
+      const pose = attackPoseAt(hit, release - 100, hand);
       hit.resolved = true; hit.result = 'perfect';
-      assert.deepEqual(weaponPoseAt(hit, release - 100, hand), pose, 'early parry must not snap the arm to rest');
+      assert.deepEqual(attackPoseAt(hit, release - 100, hand), pose, 'early parry must not snap the arm to rest');
       hit.resolved = false; hit.result = null;
       assert.equal(JSON.stringify(hit), original);
     }
@@ -118,6 +213,7 @@ test('4,000 generated turns give every strike a full cue and allow late-then-ear
         if (phase === 2) game.damageBoss(120);
         game.attack(100);
         assert.ok(game.sequence.length >= 1 && game.sequence.length <= MAX_STRIKES);
+        assert.ok(game.sequence.filter(hit => hit.damage > 1).length <= 1, 'at most one special per random turn');
         const plan = structuredClone(game.sequence);
         const planningRolls = rolls;
         for (const [i, hit] of game.sequence.entries()) {
@@ -228,7 +324,9 @@ test('ranged attacks stay distant during flight, launch is too early to parry, a
         assert.ok(distant.depth < .8 && distant.x > 40);
         assert.deepEqual(motionAt(hit, hit.at - 1), distant, 'boss stays back while projectile travels');
         assert.deepEqual(motionAt(hit, hit.at + 240), { x: 0, y: 0, depth: 1 });
-        assert.equal(parry(game, hit.launchAt, hit), 'early', 'launch is not the damage time');
+        // A rapid volley may launch while the previous parry is still cooling.
+        const launchResult = game.cooldownRemaining(hit.launchAt) > 0 ? 'cooldown' : 'early';
+        assert.equal(parry(game, hit.launchAt, hit), launchResult, 'launch cannot parry the arriving projectile');
         game.update(hit.at - MODES[mode].window - 1);
         assert.equal(game.hits, 0);
         assert.equal(parry(game, hit.at, hit), 'perfect');
@@ -314,6 +412,50 @@ test('one tap cannot parry multiple hits, attack is turn-gated, and mashing has 
   assert.equal(parry(game, second), 'perfect');
   assert.equal(parry(game, second, game.sequence[1]), 'cooldown');
   assert.equal(game.parries, 1);
+});
+
+test('every parry attempt shares a 600ms cooldown; rejected presses cannot extend or queue it and a chord is one attempt', () => {
+  assert.equal(COOLDOWN, 600);
+  for (const mode of Object.keys(MODES)) for (const side of ['left', 'right']) {
+    const other = side === 'left' ? 'right' : 'left';
+    const window = MODES[mode].window;
+    for (const [offset, wrong, expected] of [[-300, false, 'early'], [0, true, 'wrong'], [window + 1, false, 'late'], [window, false, 'parry'], [0, false, 'perfect']]) {
+      const game = new Combat({ mode, random: () => 0 });
+      game.start(); game.attack(0);
+      const hit = game.sequence[0];
+      hit.hand = side; hit.guard = side;
+      const at = hit.at + offset, input = wrong ? other : side;
+      assert.equal(game.tap(at, input), 'pending');
+      assert.equal(game.release(at, input), expected);
+      assert.equal(game.cooldownRemaining(at), COOLDOWN);
+      for (const elapsed of [1, 100, 300, COOLDOWN - 1]) {
+        const retrySide = elapsed === 100 ? other : side;
+        assert.equal(game.tap(at + elapsed, retrySide), 'cooldown');
+        game.release(at + elapsed, retrySide);
+        assert.equal(game.lastTap, at, 'mashing must not restart the penalty');
+        assert.equal(game.cooldownRemaining(at + elapsed), COOLDOWN - elapsed);
+      }
+      assert.equal(game.cooldownRemaining(at + COOLDOWN), 0);
+      assert.equal(game.tap(at + COOLDOWN, side), 'pending', 'unlock exactly at the boundary');
+      assert.equal(game.cooldownRemaining(at + COOLDOWN), COOLDOWN);
+      game.start();
+      assert.equal(game.cooldownRemaining(0), 0);
+    }
+  }
+  const chord = new Combat({ mode: 'practice', practiceAttack: 'fury', random: () => 0 });
+  chord.start(); chord.attack(0);
+  const at = chord.sequence[0].at - 40;
+  assert.equal(chord.tap(at, 'left'), 'pending');
+  assert.equal(chord.tap(at + CHORD_MS, 'right'), 'perfect');
+  assert.equal(chord.lastTap, at, 'second finger completes the same attempt');
+  assert.equal(chord.cooldownRemaining(at + CHORD_MS), COOLDOWN - CHORD_MS);
+  chord.release(at + CHORD_MS, 'left'); chord.release(at + CHORD_MS, 'right');
+  assert.equal(chord.tap(at + 100, 'right'), 'cooldown');
+  chord.update(at + COOLDOWN);
+  assert.equal(chord.pending, null, 'blocked input is not buffered for later');
+  assert.equal(chord.tap(at + COOLDOWN, 'right'), 'held', 'must release a key held during cooldown');
+  chord.release(at + COOLDOWN, 'right');
+  assert.equal(chord.tap(at + COOLDOWN, 'right'), 'pending');
 });
 
 test('missed strikes resolve once even across slow frames, defeat is terminal, practice is infinite', () => {

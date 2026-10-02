@@ -4,6 +4,6 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test combat.test.mjs"
+    "test": "node --test combat.test.mjs audio.test.mjs fighters3d.test.mjs"
   }
 }

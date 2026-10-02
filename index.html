@@ -17,11 +17,12 @@
     <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol>
     <symbol id="i-retry" viewBox="0 0 24 24"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6"/></symbol>
     <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h15m-5-5 5 5-5 5"/></symbol>
+    <symbol id="i-potion" viewBox="0 0 24 24"><path d="M9 3h6v4l4 5v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7l4-5V3ZM8 3h8M6 13h12M12 15v4m-2-2h4"/></symbol>
   </svg>
   <div class="app">
     <header class="topbar">
       <a class="brand" href="./" aria-label="잔상 처음 화면"><span class="brand-mark">◈</span><span>잔상<small>AFTERIMAGE</small></span></a>
-      <div class="edition"><span class="live-dot"></span> COMBAT PROTOTYPE <span class="version">/ 0.1</span></div>
+      <div class="edition"><span class="live-dot"></span> COMBAT PROTOTYPE <span class="version">/ 3D</span></div>
       <div class="tools">
         <button class="icon-button" id="sound" aria-label="소리 끄기" aria-pressed="true" title="소리"><svg><use href="#i-sound"/></svg></button>
         <button class="icon-button" id="pause" aria-label="일시 정지" title="일시 정지 (Esc)" disabled><svg><use href="#i-pause"/></svg></button>
@@ -34,6 +35,7 @@
         <section class="battle-column" aria-label="보스 전투">
           <div class="arena" id="arena">
             <canvas id="scene" aria-label="보스의 빛나는 팔과 무기를 보고 공격 방향과 패링 타이밍을 읽으세요"></canvas>
+            <div id="render-notice" class="render-notice" role="status" hidden>3D 표시를 사용할 수 없어 기본 화면으로 전환했습니다.</div>
             <div class="arena-vignette"></div>
             <div class="boss-hud">
               <div class="boss-meta"><span class="overline">BOSS 01 <span class="separator">/</span> THE HOLLOW WARDEN</span><span id="phase" class="phase">PHASE 01</span></div>
@@ -42,6 +44,7 @@
             </div>
             <div class="stage-note"><span>TRIAL CHAMBER</span><b>001</b><i></i></div>
             <div class="phase-toast" id="phase-toast">PHASE II <span>보스의 공격이 빨라집니다</span></div>
+            <div class="special-warning" id="special-warning" role="status" hidden><span id="special-risk"></span><strong id="special-name"></strong></div>
             <div class="combat-feedback" id="feedback" aria-live="polite"><strong></strong><span></span></div>
             <div class="timing-caption" id="timing-caption">상대의 움직임을 읽으세요</div>
             <div class="arena-bottom"><span class="turn-tag" id="turn-tag"><i></i> 전투 대기</span><span class="arena-life" id="arena-life" aria-label="생명력 5/5"><i></i><i></i><i></i><i></i><i></i><b>5 / 5</b></span><span id="round-label">ROUND —</span></div>
@@ -59,11 +62,15 @@
           </div>
 
           <div class="action-dock">
-            <button id="parry-left" class="action-button parry-button" aria-label="왼쪽 패링" aria-keyshortcuts="A" disabled><span class="parry-direction" aria-hidden="true">←</span><span><b>왼쪽 패링</b><small>왼쪽 공격 방어</small></span><kbd>A</kbd><span class="cooldown-fill"></span></button>
-            <button id="attack" class="action-button attack-button" aria-keyshortcuts="J" disabled><span><b>공격</b><small id="attack-hint">내 차례</small></span><kbd>J</kbd></button>
-            <button id="parry-right" class="action-button parry-button" aria-label="오른쪽 패링" aria-keyshortcuts="D" disabled><span class="parry-direction" aria-hidden="true">→</span><span><b>오른쪽 패링</b><small>오른쪽 공격 방어</small></span><kbd>D</kbd><span class="cooldown-fill"></span></button>
+            <button id="parry-left" class="action-button parry-button" aria-label="왼쪽 패링" aria-describedby="parry-cooldown-rule" aria-keyshortcuts="A" disabled><span class="parry-direction" aria-hidden="true">←</span><span><b>왼쪽 패링</b><small>왼쪽 공격 방어</small></span><kbd>A</kbd><span class="cooldown-fill" aria-hidden="true"></span></button>
+            <div class="player-actions">
+              <button id="attack" class="action-button attack-button" aria-keyshortcuts="J" disabled><span><b>공격</b><small id="attack-hint">내 차례</small></span><kbd>J</kbd></button>
+              <button id="items" class="action-button item-button" aria-haspopup="dialog" aria-controls="item-dialog" disabled><span><b>아이템</b><small id="item-hint">회복약 ×2</small></span></button>
+            </div>
+            <button id="parry-right" class="action-button parry-button" aria-label="오른쪽 패링" aria-describedby="parry-cooldown-rule" aria-keyshortcuts="D" disabled><span class="parry-direction" aria-hidden="true">→</span><span><b>오른쪽 패링</b><small>오른쪽 공격 방어</small></span><kbd>D</kbd><span class="cooldown-fill" aria-hidden="true"></span></button>
           </div>
           <div class="below-arena"><span><i class="small-diamond"></i> 양손 공격은 좌우를 동시에 누르세요</span><span>왼쪽 A · 오른쪽 D · 공격 J</span></div>
+          <p id="parry-cooldown-rule" class="parry-cooldown-rule"></p>
         </section>
 
         <aside class="sidebar">
@@ -78,7 +85,7 @@
           <section class="guide-panel">
             <div class="panel-heading"><h2>순간을 읽는 법</h2><span class="guide-number">01 — 03</span></div>
             <ol class="guide-list">
-              <li><span>01</span><div><b>빈틈을 공격하세요</b><p>내 차례에 공격하면 보스가 반격합니다.</p></div></li>
+              <li><span>01</span><div><b>공격 또는 회복</b><p>내 차례에 공격하거나 회복약을 사용하세요. 어느 쪽이든 보스가 반격합니다.</p></div></li>
               <li><span>02</span><div><b>팔과 무기를 읽으세요</b><p>빛나는 팔과 무기 쪽을 방어하세요. 금빛으로 밝아지는 순간 패링! 원거리 탄은 내 몸에 도착할 때.</p></div></li>
               <li><span>03</span><div><b>양손은 함께 막으세요</b><p>좌우를 두 손가락으로 동시에 누르세요. 연속 공격은 매 타격마다 새로 입력합니다.</p></div></li>
             </ol>
@@ -87,7 +94,7 @@
 
           <section class="settings-panel">
             <div class="mode-select" role="group" aria-label="전투 모드"><button data-mode="challenge" class="selected" aria-pressed="true">도전 모드</button><button data-mode="practice" aria-pressed="false">연습 모드 <span>∞</span></button></div>
-            <p id="mode-description">5번의 기회. 한 대도 맞지 않는 승리에 도전하세요.</p>
+            <p id="mode-description">생명력 5칸 · 회복약 2개. 한 대도 맞지 않는 승리에 도전하세요.</p>
             <label id="practice-attack-label" class="practice-picker" hidden>연습할 공격<select id="practice-attack"><option value="random">전체 무작위 조합</option></select><small>선택한 공격을 한 묶음씩 반복합니다</small></label>
             <label class="toggle-row" for="guide"><span>타이밍 가이드 <small>원을 표시합니다</small></span><input type="checkbox" id="guide" checked><span class="toggle"></span></label>
           </section>
@@ -98,6 +105,12 @@
     </main>
     <footer><span>AFTERIMAGE <i>／</i> COMBAT STUDY 001</span><span>오직 당신과, 다음 한 번의 타이밍.</span></footer>
   </div>
+  <dialog id="item-dialog" aria-labelledby="item-title" aria-describedby="item-rule">
+    <div class="item-heading"><div><span class="overline">YOUR TURN / ITEMS</span><h2 id="item-title">다음 공격에 대비하세요</h2></div><button id="item-cancel" class="item-cancel">취소</button></div>
+    <p id="item-rule">사용하면 1턴을 소모하고 보스가 반격합니다.<br>목록 열기와 취소는 턴을 소모하지 않습니다.</p>
+    <button id="use-potion" class="potion-choice" aria-describedby="potion-reason"><svg aria-hidden="true"><use href="#i-potion"/></svg><span><b>회복약</b><small id="potion-effect">생명력 +2 · 최대 5칸</small></span><span class="potion-stock" id="potion-stock">2 / 2</span></button>
+    <p id="potion-reason" role="status"></p>
+  </dialog>
   <script type="module" src="./app.mjs"></script>
 </body>
 </html>

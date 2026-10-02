@@ -4,9 +4,14 @@ export const MODES = {
   challenge: { window: 115, perfect: 48, label: '도전' },
   practice: { window: 185, perfect: 80, label: '연습' },
 };
-export const COOLDOWN = 320;
+// Longer than a full parry window, shorter than the fastest challenge combo.
+export const COOLDOWN = 600;
 export const CHORD_MS = 80;
 export const BOSS_HP = 240;
+export const MAX_HP = 5;
+export const HEAL_AMOUNT = 2;
+export const POTIONS = 2;
+export const ITEM_USE_MS = 850;
 export const TELEGRAPH_MS = 620;
 export const MAX_STRIKES = 6;
 export const ATTACK_COMPONENTS = [
@@ -26,6 +31,8 @@ export const ATTACK_COMPONENTS = [
   { type: 'energy-orb', name: '에너지 탄', windup: [550, 850], tempo: 'hold', delay: [250, 550], flight: [900, 1250] },
   { type: 'arc-barrage', name: '교차 파동 연사', windup: [280, 440], tempo: 'quick', hits: [2, 3], flight: [620, 820] },
   { type: 'twin-wave', name: '쌍방향 에너지 파동', windup: [650, 950], tempo: 'hold', delay: [350, 800], flight: [780, 1100], guard: 'both' },
+  { type: 'judgment', name: '단죄의 일격', damage: 2, windup: [1100, 1450], tempo: 'hold', delay: [650, 1000] },
+  { type: 'execution', name: '종언의 쌍검', damage: 3, windup: [1250, 1600], tempo: 'hold', delay: [850, 1300], guard: 'both' },
 ];
 
 // One clock, supplied by the caller: pausing and dropped frames cannot change a hit's timing.
@@ -39,7 +46,10 @@ export class Combat {
 
   reset() {
     this.state = 'ready';
-    this.hp = 5;
+    this.hp = MAX_HP;
+    this.potions = POTIONS;
+    this.potionsUsed = 0;
+    this.healAt = -Infinity;
     this.bossHp = BOSS_HP;
     this.phase = 1;
     this.round = 0;
@@ -81,6 +91,21 @@ export class Combat {
     return true;
   }
 
+  heal(now) {
+    this.update(now);
+    if (this.state !== 'player' || this.mode === 'practice' || this.hp >= MAX_HP || this.potions === 0) return false;
+    const amount = Math.min(HEAL_AMOUNT, MAX_HP - this.hp);
+    this.hp += amount;
+    this.potions--;
+    this.potionsUsed++;
+    this.healAt = now;
+    this.round++;
+    this.emit('heal', { amount });
+    this.state = 'boss';
+    this.beginSequence(now + ITEM_USE_MS);
+    return true;
+  }
+
   beginSequence(start) {
     // Compose fresh components every turn; each may contain one or more strikes.
     // Phase changes speed, never the component pool or a fixed turn pattern.
@@ -91,7 +116,8 @@ export class Combat {
     let windupAt = start;
     const recovery = Math.max(240, MODES[this.mode].window, COOLDOWN + 2 * MODES[this.mode].window + 20 - TELEGRAPH_MS);
     for (let i = 0; i < count && this.sequence.length < MAX_STRIKES; i++) {
-      const pool = ATTACK_COMPONENTS.filter(c => !c.hits || c.hits[0] <= MAX_STRIKES - this.sequence.length);
+      const specialUsed = this.sequence.some(hit => hit.damage > 1);
+      const pool = ATTACK_COMPONENTS.filter(c => (!c.hits || c.hits[0] <= MAX_STRIKES - this.sequence.length) && !(specialUsed && c.damage > 1));
       const component = selected || pool[Math.floor(this.random() * pool.length)];
       let hand = this.random() < 0.5 ? 'left' : 'right';
       const rhythm = this.random();
@@ -106,7 +132,7 @@ export class Combat {
         const motion = MOTIONS[Math.floor(this.random() * MOTIONS.length)];
         const motionStrength = this.roll(.85, 1.15);
         const guard = component.guard || hand;
-        this.sequence.push({ type: component.type, name: component.name, hand, guard, tempo, motion, motionStrength, group: i, stroke, strokes, windupAt, commitAt, launchAt, at, resolved: false, result: null });
+        this.sequence.push({ type: component.type, name: component.name, damage: component.damage ?? 1, hand, guard, tempo, motion, motionStrength, group: i, stroke, strokes, windupAt, commitAt, launchAt, at, resolved: false, result: null });
         // Each stroke, including a flurry, retains its own full cue and cooldown margin.
         windupAt = at + recovery + this.roll(0, component.hits ? 40 : 180) * speed;
         hand = hand === 'left' ? 'right' : 'left';
@@ -136,10 +162,10 @@ export class Combat {
     if (this.pending && side !== this.pending.side && this.held.has(this.pending.side)) {
       const first = this.pending;
       this.pending = null;
-      this.lastTap = now;
+      // A chord completes the original attempt, so it does not restart cooldown.
       return this.resolveInput('both', first.at, now);
     }
-    if (now - this.lastTap < COOLDOWN) return 'cooldown';
+    if (this.cooldownRemaining(now) > 0) return 'cooldown';
     this.lastTap = now;
     // Briefly collect a chord so pressing both cannot auto-block single-hand attacks.
     this.pending = { side, at: now };
@@ -202,8 +228,9 @@ export class Combat {
         hit.result = 'miss';
         this.hits++;
         this.streak = 0;
-        if (this.mode !== 'practice') this.hp--;
-        this.emit('hurt');
+        const damage = this.mode === 'practice' ? 0 : hit.damage;
+        this.hp = Math.max(0, this.hp - damage);
+        this.emit('hurt', { damage, attackDamage: hit.damage });
         if (this.hp <= 0) {
           this.state = 'lost';
           this.emit('lost');
@@ -218,4 +245,5 @@ export class Combat {
   }
 
   nextHit() { return this.sequence.find(h => !h.resolved); }
+  cooldownRemaining(now = this.time) { return Math.max(0, this.lastTap + COOLDOWN - now); }
 }
