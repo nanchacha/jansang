@@ -1,6 +1,6 @@
 import { Combat, MODES, COOLDOWN, ITEM_USE_MS, TELEGRAPH_MS, ATTACK_COMPONENTS } from './combat.mjs';
-import { Expedition, NODE_TYPES, RELICS } from './expedition.mjs';
-import { motionAt, specialIntensityAt } from './motion.mjs';
+import { Expedition, NODE_TYPES, RELICS, TRAINING } from './expedition.mjs';
+import { motionAt, specialIntensityAt, dodgeMotionAt } from './motion.mjs';
 import { Fighters3D } from './fighters3d.mjs';
 import { CombatAudio } from './audio.mjs';
 
@@ -86,6 +86,11 @@ function processEvents() {
       case 'start': feedback('YOUR TURN', '공격하거나 아이템을 선택하세요', '', 1500); break;
       case 'attack': feedbackUntil = 0; audio.play('attack', .55); burst('attack'); break;
       case 'heal': feedback(`HP +${event.amount}`, `회복약 사용 · 남은 수량 ${game.potions}개`, 'heal', ITEM_USE_MS); break;
+      case 'dodge':
+        feedback('회피', `${(game.dodgeDuration() / 1000).toFixed(2)}초 무적`, 'dodge', game.dodgeDuration());
+        audio.play('swing', .18, .8);
+        break;
+      case 'evade': feedback('DODGE', '회피 성공 · 피해 0', 'dodge', 750); break;
       case 'perfect':
       case 'parry': {
         const perfect = event.type === 'perfect';
@@ -157,24 +162,26 @@ function updateUI() {
   $('use-potion').disabled = !playerTurn || paused || Boolean(potionReason);
   $('potion-reason').textContent = potionReason || `지금 사용하면 ${Math.min(game.maxHp, game.hp + game.healAmount)} / ${game.maxHp}로 회복합니다. 피격 기록은 유지됩니다.`;
   Object.values(parryButtons).forEach(button => { button.disabled = !bossTurn || paused; });
+  $('dodge').disabled = !bossTurn || paused;
   $('attack-hint').textContent = playerTurn ? `피해 ${game.attackDamage + (game.attacks === 0 ? game.profile.firstStrikeBonus || 0 : 0)}` : '내 차례';
   $('pause').disabled = !running();
   activeModes.forEach(button => { button.disabled = running() || !$('death-screen').hidden; });
   $('practice-attack-label').hidden = game.mode !== 'practice';
   $('practice-attack').disabled = running() || !$('death-screen').hidden;
-  updateParryCooldown(clock());
+  $('dodge-rule').textContent = `회피: 닿기 직전에 탭 · ${(game.dodgeDuration() / 1000).toFixed(2)}초 무적 · 방향 무관`;
+  updateDefenseCooldown(clock());
 }
 
-function updateParryCooldown(now) {
+function updateDefenseCooldown(now) {
   const remaining = game.state === 'boss' ? game.cooldownRemaining(now) : 0;
-  for (const [side, button] of Object.entries(parryButtons)) {
+  for (const [side, button] of Object.entries({ ...parryButtons, dodge: $('dodge') })) {
     // Keep pointer capture / key releases alive. Combat enforces the lock;
     // the second finger may still complete an already-started 80ms chord.
-    const joiningChord = game.pending && game.pending.side !== side && game.held.has(game.pending.side);
+    const joiningChord = side !== 'dodge' && game.pending && game.pending.side !== side && game.held.has(game.pending.side);
     const cooling = remaining > 0 && !joiningChord;
     button.classList.toggle('cooling', cooling);
     button.setAttribute('aria-disabled', String(button.disabled || cooling));
-    const hint = joiningChord ? '동시 입력 가능' : cooling ? `대기 ${(Math.ceil(remaining / 100) / 10).toFixed(1)}초` : `${side === 'left' ? '왼쪽' : '오른쪽'} 공격 방어`;
+    const hint = joiningChord ? '동시 입력 가능' : side === 'dodge' && game.isDodgingAt(now) ? '무적 상태' : cooling ? `대기 ${(Math.ceil(remaining / 100) / 10).toFixed(1)}초` : side === 'dodge' ? '방향 없이 피하기' : `${side === 'left' ? '왼쪽' : '오른쪽'} 공격 방어`;
     const label = button.querySelector('small');
     if (label.textContent !== hint) label.textContent = hint;
     button.querySelector('.cooldown-fill').style.width = `${remaining / COOLDOWN * 100}%`;
@@ -190,6 +197,7 @@ function start() {
   unlockAudio();
   origin = performance.now(); lastFrame = origin;
   game.start();
+  $('battle-xp').hidden = true;
   particles = []; phaseUntil = 0; flashAt = -Infinity;
   $('overlay').hidden = true;
   $('arena').classList.remove('hit');
@@ -201,9 +209,9 @@ function act(kind) {
   unlockAudio();
   const now = clock();
   if (kind === 'attack') game.attack(now);
-  else if (game.tap(now, kind) === 'cooldown') {
+  else if ((kind === 'dodge' ? game.dodge(now) : game.tap(now, kind)) === 'cooldown') {
     const remaining = game.cooldownRemaining(now);
-    feedback('재사용 대기', `${(Math.ceil(remaining / 100) / 10).toFixed(1)}초 후 다시 패링할 수 있습니다`, 'early', remaining);
+    feedback('재사용 대기', `${(Math.ceil(remaining / 100) / 10).toFixed(1)}초 후 패링·회피 가능`, 'early', remaining);
   }
   processEvents();
 }
@@ -246,6 +254,7 @@ function togglePause() {
     $('overlay-copy').innerHTML = '준비되면, 멈췄던 순간부터 이어갑니다.';
     $('overlay-foot').textContent = '화면을 벗어나면 전투가 자동으로 멈춥니다';
     $('result-stats').hidden = true;
+    $('battle-xp').hidden = true;
     $('intro-emblem').textContent = 'Ⅱ';
     $('start').innerHTML = '전투 계속 <svg><use href="#i-arrow"/></svg>';
     $('overlay').hidden = false;
@@ -271,6 +280,8 @@ async function finish(won) {
   $('overlay-copy').innerHTML = nohit ? '한 대도 맞지 않았습니다.<br>모든 순간이 당신의 것이었습니다.' : won ? '공허의 파수꾼을 쓰러뜨렸습니다.<br>다음 목표는 한 대도 맞지 않는 승리.' : '패턴은 달라져도, 빈틈은 있습니다.<br>다음에는 조금 더 정확하게.';
   $('result-stats').innerHTML = `<div><span>전투 시간</span><b>${timeString(game.elapsed)}</b></div><div><span>퍼펙트</span><b>${game.perfects}</b></div><div><span>피격</span><b>${game.hits}</b></div><div><span>회복약 사용</span><b>${game.potionsUsed}회</b></div>`;
   $('result-stats').hidden = false;
+  $('battle-xp').hidden = !expeditionBattle || !won;
+  if (expeditionBattle && won) $('battle-xp').textContent = `+${expedition.lastXpGain} XP 획득 · 보유 ${expedition.xp} XP`;
   $('start').innerHTML = '다시 도전 <svg><use href="#i-retry"/></svg>';
   $('overlay-foot').textContent = game.mode === 'practice' ? '연습 모드 · 최고 기록에 포함되지 않습니다' : '새로운 공격 조합이 기다립니다';
   if (expeditionBattle) {
@@ -337,7 +348,19 @@ function showMap() {
 function renderExpedition() {
   const run = expedition, available = run.available();
   $('expedition-floor').textContent = String(run.node?.floor || 0).padStart(2, '0');
-  $('expedition-status').innerHTML = `<div><span>생명력</span><b>${run.hp} <small>/ ${run.maxHp}</small></b></div><div><span>공격력</span><b>${run.profile.attackDamage} <small>+${run.weapon} 강화</small></b></div><div><span>회복약</span><b>${run.potions} <small>개</small></b></div><div><span>누적 피격</span><b>${run.stats.hits} <small>회</small></b></div>`;
+  $('expedition-status').innerHTML = `<div><span>생명력</span><b>${run.hp} <small>/ ${run.maxHp}</small></b></div><div><span>공격력</span><b>${run.profile.attackDamage} <small>${run.weapon + run.training.power}회 강화</small></b></div><div><span>회복약</span><b>${run.potions} <small>개</small></b></div><div><span>누적 피격</span><b>${run.stats.hits} <small>회</small></b></div>`;
+  $('xp-balance').textContent = run.xp;
+  const canUpgrade = Object.keys(TRAINING).some(id => run.canTrain(id));
+  $('training-panel').classList.toggle('has-upgrade', canUpgrade);
+  $('training-ready').textContent = canUpgrade ? '강화 가능' : '경험치로 능력 성장';
+  $('training-feedback').textContent = '';
+  $('training-options').innerHTML = Object.entries(TRAINING).map(([id, option]) => {
+    const cost = run.trainingCost(id);
+    const capped = cost === null;
+    const effect = id === 'power' ? `공격력 ${run.profile.attackDamage} → ${run.profile.attackDamage + 1}` : `최대 체력 ${run.maxHp} → ${run.maxHp + 1} · 현재 체력 +1`;
+    const status = capped ? '최대 강화' : ['won', 'lost'].includes(run.state) ? '원정 종료' : run.state !== 'map' ? '다음 길 선택 시 강화 가능' : run.xp < cost ? `${cost - run.xp} XP 부족` : '강화하기';
+    return `<button class="training-option" data-training="${id}" ${run.canTrain(id) ? '' : 'disabled'}><span class="training-icon" aria-hidden="true">${option.icon}︎</span><span><b>${option.name} <small>${run.training[id]} / ${option.costs.length}</small></b><span>${capped ? '최대치에 도달했습니다' : effect}</span><small>${status}</small></span><strong>${capped ? 'MAX' : `${cost} XP`}</strong></button>`;
+  }).join('');
   const edges = run.nodes.flatMap(node => node.next.map(id => {
     const next = run.nodes.find(n => n.id === id);
     const travelled = run.visited.includes(node.id) && (run.visited.includes(id) || id === run.current);
@@ -359,7 +382,7 @@ function renderExpedition() {
     card.innerHTML = `<span class="overline">${rare ? 'ELITE REWARD' : 'A FORGOTTEN TREASURE'}</span><h2>${rare ? '강적이 남긴 유산' : '잊힌 자의 보물'}</h2><p>${rare ? '정예를 꺾은 대가로 더 강한 보상을 얻습니다.' : '길을 지켜온 유물이 당신을 기다립니다.'}<br>보상 하나를 선택하세요.</p><div class="journey-choices">${run.offers.map(item => choice(item.id, RELICS[item.id].icon, `${item.rare ? '희귀 · ' : ''}${RELICS[item.id].name}`, RELICS[item.id].describe(item.rare))).join('')}</div><span class="choice-foot">유물은 이번 원정이 끝날 때까지 적용됩니다.</span>`;
   } else if (['won', 'lost'].includes(run.state)) {
     const won = run.state === 'won';
-    card.innerHTML = `<span class="overline">${won && run.stats.hits === 0 ? 'A FLAWLESS EXPEDITION' : won ? 'EXPEDITION COMPLETE' : 'THE JOURNEY ENDS'}</span><h2>${won ? '공허를 넘어서' : '다음 길은 다를 거예요'}</h2><p>${won ? run.stats.hits === 0 ? '전 원정 무피격 달성. 모든 순간을 막아냈습니다.' : '공허의 파수꾼을 쓰러뜨리고 원정을 완주했습니다.' : `${run.node.floor}번째 지점에서 쓰러졌습니다. 경험은 다음 원정에 남습니다.`}</p><dl class="journey-results"><div><dt>완료한 지점</dt><dd>${run.visited.length} / 10</dd></div><div><dt>승리한 전투</dt><dd>${run.stats.battles}회</dd></div><div><dt>전투 시간</dt><dd>${timeString(run.stats.elapsed)}</dd></div><div><dt>피격 / 퍼펙트</dt><dd>${run.stats.hits} / ${run.stats.perfects}</dd></div><div><dt>회복약 사용</dt><dd>${run.stats.potionsUsed}회</dd></div></dl><button class="new-expedition" data-new-run>새로운 원정 시작 <span>↗</span></button>`;
+    card.innerHTML = `<span class="overline">${won && run.stats.hits === 0 ? 'A FLAWLESS EXPEDITION' : won ? 'EXPEDITION COMPLETE' : 'THE JOURNEY ENDS'}</span><h2>${won ? '공허를 넘어서' : '다음 길은 다를 거예요'}</h2><p>${won ? run.stats.hits === 0 ? '전 원정 무피격 달성. 모든 순간을 막아냈습니다.' : '공허의 파수꾼을 쓰러뜨리고 원정을 완주했습니다.' : `${run.node.floor}번째 지점에서 쓰러졌습니다. 새 원정에서는 경험치와 강화가 초기화됩니다.`}</p><dl class="journey-results"><div><dt>완료한 지점</dt><dd>${run.visited.length} / 10</dd></div><div><dt>승리한 전투</dt><dd>${run.stats.battles}회</dd></div><div><dt>전투 시간</dt><dd>${timeString(run.stats.elapsed)}</dd></div><div><dt>피격 / 퍼펙트</dt><dd>${run.stats.hits} / ${run.stats.perfects}</dd></div><div><dt>회복약 사용</dt><dd>${run.stats.potionsUsed}회</dd></div><div><dt>획득 경험치 / 남은 경험치</dt><dd>${run.stats.xpEarned} / ${run.xp} XP</dd></div></dl><button class="new-expedition" data-new-run>새로운 원정 시작 <span>↗</span></button>`;
   } else {
     card.innerHTML = `<span class="overline">CHOOSE YOUR NEXT STEP</span><h2>${run.current ? '다음 길을 고르세요' : '한 걸음부터, 시작'}</h2><p>빛나는 지점을 눌러 이동하세요.<br>한 번 지나온 길로는 돌아갈 수 없습니다.</p><ol class="journey-rules"><li><b>전투</b><span>빛나는 팔과 무기를 읽고 방향에 맞춰 패링하세요.</span></li><li><b>휴식</b><span>회복, 무기 강화, 생명력 단련 중 하나를 선택하세요.</span></li><li><b>보물</b><span>유물과 회복약으로 마지막 전투를 준비하세요.</span></li></ol><div class="route-tip">정예 전투는 위험하지만, 더 강한 유물을 남깁니다.</div>`;
   }
@@ -391,6 +414,14 @@ $('journey-card').addEventListener('click', event => {
   const changed = expedition.state === 'rest' ? expedition.rest(id) : expedition.claim(id);
   if (changed) { renderExpedition(); focusRoute(); }
 });
+$('training-options').addEventListener('click', event => {
+  const id = event.target.closest('[data-training]')?.dataset.training;
+  if (!id || !expedition.train(id)) return;
+  renderExpedition();
+  $('training-feedback').textContent = `${TRAINING[id].name} 완료 · ${id === 'power' ? `공격력 ${expedition.profile.attackDamage}` : `생명력 ${expedition.hp} / ${expedition.maxHp}`} · 남은 ${expedition.xp} XP`;
+  const button = $('training-options').querySelector(`[data-training="${id}"]`);
+  (button.disabled ? $('training-toggle') : button).focus({ preventScroll: true });
+});
 $('locate-node').addEventListener('click', locateNode);
 $('show-map').addEventListener('click', showMap);
 $('show-solo').addEventListener('click', () => {
@@ -406,6 +437,7 @@ $('show-solo').addEventListener('click', () => {
   $('overlay-copy').textContent = '빛나는 팔과 무기를 읽고 모든 공격을 막아내세요.';
   $('overlay-foot').textContent = '아래에서 연습 모드와 공격 패턴을 선택할 수 있습니다.';
   $('intro-emblem').textContent = '◇'; $('result-stats').hidden = true;
+  $('battle-xp').hidden = true;
   $('start').innerHTML = '전투 시작 <svg><use href="#i-arrow"/></svg>';
   $('overlay').hidden = false;
   resize(); updateUI();
@@ -443,12 +475,14 @@ $('practice-attack').addEventListener('change', event => {
   game = new Combat({ mode: game.mode, practiceAttack: event.target.value });
   updateUI();
 });
-$('attack').addEventListener('pointerdown', event => {
-  if (event.button !== 0) return;
-  event.preventDefault();
-  act('attack');
-});
-$('attack').addEventListener('click', event => { if (event.detail === 0) act('attack'); });
+for (const action of ['attack', 'dodge']) {
+  $(action).addEventListener('pointerdown', event => {
+    if (event.button !== 0 || $(action).disabled) return;
+    event.preventDefault();
+    act(action);
+  });
+  $(action).addEventListener('click', event => { if (event.detail === 0) act(action); });
+}
 for (const [side, button] of Object.entries(parryButtons)) {
   button.addEventListener('pointerdown', event => {
     if (event.button !== 0 || button.disabled) return;
@@ -483,10 +517,11 @@ document.addEventListener('keydown', event => {
   if ($('item-dialog').open) return;
   if (event.repeat || /INPUT|TEXTAREA|SELECT/.test(event.target.tagName)) return;
   if (event.code === 'Escape') { togglePause(); return; }
-  if (['KeyJ', 'KeyA', 'KeyD'].includes(event.code)) {
+  if (['KeyJ', 'KeyA', 'KeyD', 'KeyK'].includes(event.code)) {
     if (!running() || paused) return;
     event.preventDefault();
     if (event.code === 'KeyJ') act('attack');
+    else if (event.code === 'KeyK') act('dodge');
     else pressParry(event.code === 'KeyA' ? 'left' : 'right', event.code);
   }
 });
@@ -712,11 +747,18 @@ function drawScene(now) {
 
   const attackProgress = Math.max(0, Math.min(1, (now - game.attackAt) / 520));
   const dash = reducedMotion ? 0 : Math.sin(attackProgress * Math.PI) * width * .12;
-  const playerX = width * .3 + dash, playerY = height * .76 - dash * .7;
+  const dodge = dodgeMotionAt(now, game.dodgeAt, reducedMotion);
+  const playerX = width * .3 + dash - dodge * 46 * scale, playerY = height * .76 - dash * .7 + dodge * 12 * scale;
   const parrying = ['parry', 'perfect'].includes(flashKind) && now - flashAt < 350;
   const playerGuardY = playerY - 44 * scale;
   const playerGroundY = playerY + 39 * scale;
   ellipse(playerX, playerGroundY, 30 * scale, 6 * scale, '#00000040', true);
+  if (game.isDodgingAt(now)) {
+    ellipse(playerX, playerGroundY, 38 * scale, 10 * scale, '#c0b4ed');
+    if (!reducedMotion) {
+      for (const offset of [15, 35, 55]) line([[playerX + offset * scale, playerY - 40 * scale], [playerX + (offset + 22) * scale, playerY - 46 * scale]], '#c0b4ed66', 2);
+    }
+  }
   let anchors;
   const use3D = Boolean(fighters?.available);
   canvas.dataset.renderer = use3D ? 'webgl2' : 'fallback';
@@ -725,7 +767,7 @@ function drawScene(now) {
     anchors = fighters.draw(ctx, { width, height, bossX, bossY: bossY + floatY, bossScale, bossLean: lean,
       playerX, playerY, scale, hit: poseHit, glowHit, parryWindow, now,
       attackAt: game.attackAt, parryAt: parrying ? flashAt : -Infinity,
-      hurtAt: flashKind === 'hurt' ? flashAt : -Infinity, healAt: game.healAt, reduced: reducedMotion, enemy: game.enemy });
+      hurtAt: flashKind === 'hurt' ? flashAt : -Infinity, healAt: game.healAt, dodgeAt: game.dodgeAt, reduced: reducedMotion, enemy: game.enemy });
   } else {
     // Compatibility fallback only. No cutout animation is used by the 3D renderer.
     ctx.save(); ctx.translate(bossX, bossY); ctx.scale(-bossScale, bossScale);
@@ -781,7 +823,7 @@ function drawScene(now) {
     for (const side of [-1, 1]) {
       if (poseHit.guard === 'both' || poseHit.hand === (side < 0 ? 'left' : 'right')) {
         const source = projectileOrigins.get(poseHit)?.[side < 0 ? 'left' : 'right'];
-        drawProjectile(poseHit, now, source ? [source[0] * width, source[1] * height] : [bossX + side * 100 * bossScale, bossY + 12 * bossScale], [playerX + side * 22 * scale, playerGuardY], side, scale);
+        drawProjectile(poseHit, now, source ? [source[0] * width, source[1] * height] : [bossX + side * 100 * bossScale, bossY + 12 * bossScale], [playerX + (side * 22 + dodge * 46) * scale, playerGuardY - dodge * 12 * scale], side, scale);
       }
     }
   }
@@ -830,8 +872,8 @@ function drawScene(now) {
   }
   if (game.state === 'boss' && !paused) {
     const remaining = game.sequence.filter(h => !h.resolved).length;
-    const rangedCaption = hit?.launchAt != null && windup ? now < hit.launchAt ? `${hit.name} 충전 · 도착할 때 패링` : `${hit.name} 접근 · 도착할 때 패링` : '';
-    $('timing-caption').textContent = healProgress >= 0 && healProgress < 1 ? '회복 중 · 곧 보스가 반격합니다' : parryWindow ? '지금, 패링!' : rangedCaption || (warning ? `${hit.name} · 빛나는 무기를 보세요` : windup && remaining ? '빛나는 팔과 무기를 읽고 기다리세요' : remaining ? '보스가 공격을 준비합니다' : '공격을 막아냈다면, 다음 빈틈을 노리세요');
+    const rangedCaption = hit?.launchAt != null && windup ? now < hit.launchAt ? `${hit.name} 충전 · 도착에 맞춰 방어` : `${hit.name} 접근 · 패링 또는 회피` : '';
+    $('timing-caption').textContent = healProgress >= 0 && healProgress < 1 ? '회복 중 · 곧 보스가 반격합니다' : parryWindow ? '패링! 회피는 닿기 직전에' : rangedCaption || (warning ? `${hit.name} · 빛나는 무기를 보세요` : windup && remaining ? '빛나는 팔과 무기를 읽고 기다리세요' : remaining ? '보스가 공격을 준비합니다' : '공격을 피했다면, 다음 빈틈을 노리세요');
     $('timing-caption').style.color = parryWindow ? '#f6dfa1' : hit?.launchAt != null ? '#a5dfff' : hit?.type === 'fury' ? '#edb098' : '#b3c0a7';
   } else {
     $('timing-caption').textContent = game.state === 'player' ? '공격하거나 아이템을 선택하세요.' : '';
@@ -871,9 +913,9 @@ function frame(realTime) {
   $('feedback').classList.toggle('visible', now < feedbackUntil && $('overlay').hidden);
   $('phase-toast').classList.toggle('visible', now < phaseUntil && $('overlay').hidden && $('special-warning').hidden);
   $('arena').classList.toggle('parried', ['parry', 'perfect'].includes(flashKind) && now - flashAt < 250);
-  updateParryCooldown(now);
+  updateDefenseCooldown(now);
   requestAnimationFrame(frame);
 }
 
-$('parry-cooldown-rule').textContent = `패링 후 ${(COOLDOWN / 1000).toFixed(1)}초 대기 · 좌우 공통 · 성공·실패 모두 적용`;
+$('parry-cooldown-rule').textContent = `패링·회피 후 ${(COOLDOWN / 1000).toFixed(1)}초 공통 대기 · 성공·실패 모두 적용`;
 resize(); renderBest(); updateUI(); renderExpedition(); locateNode(); requestAnimationFrame(frame);

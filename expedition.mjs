@@ -1,4 +1,10 @@
-import { Combat } from './combat.mjs';
+import { Combat, ENEMY_HP, BASE_ATTACK_DAMAGE } from './combat.mjs';
+
+export const XP_REWARDS = { normal: 10, elite: 15, boss: 30 };
+export const TRAINING = {
+  power: { name: '검술 수련', icon: '⚔', costs: [10, 20, 30] },
+  vitality: { name: '생명력 단련', icon: '◇', costs: [15, 25] },
+};
 
 export const NODE_TYPES = {
   normal: { name: '일반 전투', icon: '⚔', description: '짧은 교전. 체력과 회복약을 아끼세요.' },
@@ -30,7 +36,7 @@ export function makeMap(random = Math.random) {
       if (floor === 10) type = 'boss';
       if (type === 'elite') eliteUsed = true;
       const node = { id: `${floor}-${column}`, floor, column, type, next: [],
-        hp: type === 'boss' ? 240 : type === 'elite' ? 144 : floor < 5 ? 72 : 96 };
+        hp: ENEMY_HP[type] ?? 0 };
       parents.forEach(parent => parent.next.push(node.id));
       nodes.push(node);
     }
@@ -44,14 +50,16 @@ export class Expedition {
     this.nodes = makeMap(random);
     this.state = 'map'; this.current = null; this.visited = [];
     this.hp = 5; this.maxHp = 5; this.potions = 2; this.weapon = 0;
+    this.xp = 0; this.lastXpGain = 0;
+    this.training = { power: 0, vitality: 0 };
     this.relics = []; this.offers = []; this.battle = null;
-    this.stats = { battles: 0, hits: 0, parries: 0, perfects: 0, potionsUsed: 0, elapsed: 0 };
+    this.stats = { battles: 0, hits: 0, parries: 0, perfects: 0, potionsUsed: 0, elapsed: 0, xpEarned: 0 };
   }
 
   get node() { return this.nodes.find(n => n.id === this.current); }
   get profile() {
     const rank = id => { const item = this.relics.find(r => r.id === id); return item ? item.rare ? 2 : 1 : 0; };
-    return { hp: this.hp, maxHp: this.maxHp, potions: this.potions, attackDamage: 24 + this.weapon * 6,
+    return { hp: this.hp, maxHp: this.maxHp, potions: this.potions, attackDamage: BASE_ATTACK_DAMAGE + this.weapon * 6 + this.training.power,
       firstStrikeBonus: rank('vanguard') ? rank('vanguard') === 2 ? 18 : 12 : 0,
       healAmount: 2 + rank('apothecary'), specialReduction: rank('ward') };
   }
@@ -67,6 +75,7 @@ export class Expedition {
     else if (node.type === 'treasure') this.offerRewards(false);
     else {
       this.state = 'battle';
+      this.lastXpGain = 0;
       this.battle = new Combat({ random: this.random, enemy: node.type, bossHp: node.hp, profile: this.profile });
     }
     return true;
@@ -83,10 +92,28 @@ export class Expedition {
     if (fight.state === 'lost') this.state = 'lost';
     else {
       this.stats.battles++;
+      this.lastXpGain = XP_REWARDS[this.node.type];
+      this.xp += this.lastXpGain;
+      this.stats.xpEarned += this.lastXpGain;
       this.completeNode();
       if (this.node.type === 'boss') this.state = 'won';
       else if (this.node.type === 'elite') this.offerRewards(true);
     }
+    return true;
+  }
+  trainingCost(id) {
+    if (id === 'vitality' && this.maxHp >= 7) return null;
+    return TRAINING[id]?.costs?.[this.training[id]] ?? null;
+  }
+  canTrain(id) {
+    const cost = this.trainingCost(id);
+    return this.state === 'map' && cost !== null && this.xp >= cost;
+  }
+  train(id) {
+    if (!this.canTrain(id)) return false;
+    this.xp -= this.trainingCost(id);
+    this.training[id]++;
+    if (id === 'vitality') { this.maxHp++; this.hp++; }
     return true;
   }
   rest(choice) {

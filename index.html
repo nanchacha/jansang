@@ -35,6 +35,15 @@
       <section id="expedition-view" aria-label="원정 지도">
         <header class="expedition-heading"><div><span class="overline">CHAPTER 01 / THE HOLLOW ROAD</span><h1>공허로 향하는 길</h1><p>전투 8칸 · 휴식 1칸 · 보물 1칸</p></div><div class="expedition-progress"><strong id="expedition-floor">00</strong><span>/ 10 지점</span></div></header>
         <div id="expedition-status" class="expedition-status" aria-label="원정 상태"></div>
+        <details class="training-panel" id="training-panel">
+          <summary id="training-toggle"><span>캐릭터 강화 <small id="training-ready">경험치로 능력 성장</small></span><b><span id="xp-balance">0</span> <small>XP</small></b></summary>
+          <div class="training-content">
+            <p>원정 승리 보상 · 일반 <b>10 XP</b> · 정예 <b>15 XP</b> · 보스 <b>30 XP</b></p>
+            <div class="training-options" id="training-options"></div>
+            <p id="training-feedback" role="status"></p>
+            <p class="training-note" id="training-note">경험치와 강화는 이번 원정에 적용됩니다. 새 원정·새로고침 시 초기화됩니다.</p>
+          </div>
+        </details>
         <div class="expedition-layout">
           <section class="map-panel" aria-label="분기 지도">
             <div class="map-caption"><span>↑ 위로 이동하며 길을 선택하세요</span><button id="locate-node">현재 위치</button></div>
@@ -56,8 +65,8 @@
             <div class="arena-vignette"></div>
             <div class="boss-hud">
               <div class="boss-meta"><span class="overline" id="enemy-label">BOSS 01 / THE HOLLOW WARDEN</span><span id="phase" class="phase">PHASE 01</span></div>
-              <div class="boss-title"><h1 id="enemy-name">공허의 파수꾼</h1><span id="boss-health">240 <small>/ 240</small></span></div>
-              <div class="boss-health-track" role="progressbar" aria-label="보스 체력" aria-valuemin="0" aria-valuemax="240" aria-valuenow="240"><div id="boss-fill"></div><i></i></div>
+              <div class="boss-title"><h1 id="enemy-name">공허의 파수꾼</h1><span id="boss-health">30 <small>/ 30</small></span></div>
+              <div class="boss-health-track" role="progressbar" aria-label="보스 체력" aria-valuemin="0" aria-valuemax="30" aria-valuenow="30"><div id="boss-fill"></div><i></i></div>
             </div>
             <div class="stage-note"><span>TRIAL CHAMBER</span><b>001</b><i></i></div>
             <div class="phase-toast" id="phase-toast">PHASE II <span>보스의 공격이 빨라집니다</span></div>
@@ -73,6 +82,7 @@
               <h2 id="overlay-title">한 번의 탭.<br><em>완벽한 방어.</em></h2>
               <p id="overlay-copy">피할 수 없는 공격은 없습니다.<br>순간을 읽고, 모든 공격을 막아내세요.</p>
               <div class="result-stats" id="result-stats" hidden></div>
+              <div class="battle-xp" id="battle-xp" hidden></div>
               <button class="start-button" id="start">전투 시작 <svg><use href="#i-arrow"/></svg></button>
               <span class="overlay-foot" id="overlay-foot">이어폰을 착용하면 타이밍에 더 집중할 수 있어요</span>
             </div>
@@ -80,13 +90,15 @@
 
           <div class="action-dock">
             <button id="parry-left" class="action-button parry-button" aria-label="왼쪽 패링" aria-describedby="parry-cooldown-rule" aria-keyshortcuts="A" disabled><span class="parry-direction" aria-hidden="true">←</span><span><b>왼쪽 패링</b><small>왼쪽 공격 방어</small></span><kbd>A</kbd><span class="cooldown-fill" aria-hidden="true"></span></button>
+            <button id="dodge" class="action-button dodge-button" aria-label="회피" aria-describedby="dodge-rule parry-cooldown-rule" aria-keyshortcuts="K" disabled><span><b>회피</b><small>방향 없이 피하기</small></span><kbd>K</kbd><span class="cooldown-fill" aria-hidden="true"></span></button>
+            <button id="parry-right" class="action-button parry-button" aria-label="오른쪽 패링" aria-describedby="parry-cooldown-rule" aria-keyshortcuts="D" disabled><span class="parry-direction" aria-hidden="true">→</span><span><b>오른쪽 패링</b><small>오른쪽 공격 방어</small></span><kbd>D</kbd><span class="cooldown-fill" aria-hidden="true"></span></button>
             <div class="player-actions">
               <button id="attack" class="action-button attack-button" aria-keyshortcuts="J" disabled><span><b>공격</b><small id="attack-hint">내 차례</small></span><kbd>J</kbd></button>
               <button id="items" class="action-button item-button" aria-haspopup="dialog" aria-controls="item-dialog" disabled><span><b>아이템</b><small id="item-hint">회복약 ×2</small></span></button>
             </div>
-            <button id="parry-right" class="action-button parry-button" aria-label="오른쪽 패링" aria-describedby="parry-cooldown-rule" aria-keyshortcuts="D" disabled><span class="parry-direction" aria-hidden="true">→</span><span><b>오른쪽 패링</b><small>오른쪽 공격 방어</small></span><kbd>D</kbd><span class="cooldown-fill" aria-hidden="true"></span></button>
           </div>
-          <div class="below-arena"><span><i class="small-diamond"></i> 양손 공격은 좌우를 동시에 누르세요</span><span>왼쪽 A · 오른쪽 D · 공격 J</span></div>
+          <div class="below-arena"><span><i class="small-diamond"></i> 양손은 동시 패링 또는 회피</span><span>패링 A/D · 회피 K · 공격 J</span></div>
+          <p id="dodge-rule" class="dodge-rule"></p>
           <p id="parry-cooldown-rule" class="parry-cooldown-rule"></p>
         </section>
 
@@ -104,7 +116,7 @@
             <ol class="guide-list">
               <li><span>01</span><div><b>공격 또는 회복</b><p>내 차례에 공격하거나 회복약을 사용하세요. 어느 쪽이든 보스가 반격합니다.</p></div></li>
               <li><span>02</span><div><b>팔과 무기를 읽으세요</b><p>빛나는 팔과 무기 쪽을 방어하세요. 금빛으로 밝아지는 순간 패링! 원거리 탄은 내 몸에 도착할 때.</p></div></li>
-              <li><span>03</span><div><b>양손은 함께 막으세요</b><p>좌우를 두 손가락으로 동시에 누르세요. 연속 공격은 매 타격마다 새로 입력합니다.</p></div></li>
+              <li><span>03</span><div><b>막거나, 피하거나</b><p>양손 공격은 좌우 동시 패링. 회피는 방향 없이 닿기 직전에 누르세요. 연속 공격은 매 타격마다 새로 입력합니다.</p></div></li>
             </ol>
             <div class="timing-legend"><span class="legend-line"></span><span class="legend-window"></span><span class="legend-core"></span><div><span>패링 · 피해 0</span><b>PERFECT · 정확한 타이밍</b></div></div>
           </section>

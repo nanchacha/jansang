@@ -86,19 +86,26 @@ export function bossRigPoseAt(hit, now, reduced = false) {
   return pose;
 }
 
-export function playerRigPoseAt(now, attackAt, parryAt, hurtAt, reduced = false, healing = 0) {
+export function dodgeMotionAt(now, dodgeAt, reduced = false) {
+  const progress = (now - dodgeAt) / 500;
+  if (reduced || progress <= 0 || progress >= 1) return 0;
+  return progress < .3 ? smooth(progress / .3) : 1 - smooth((progress - .3) / .7);
+}
+
+export function playerRigPoseAt(now, attackAt, parryAt, hurtAt, reduced = false, healing = 0, dodgeAt = -Infinity) {
   const drink = reduced ? 0 : healing;
+  const dodge = dodgeMotionAt(now, dodgeAt, reduced);
   const action = playerPoseAt(now, attackAt, parryAt, hurtAt, reduced);
   const progress = Math.max(0, Math.min(1, (now - attackAt) / 520));
   const attack = reduced ? 0 : Math.sin(progress * Math.PI);
   const windup = Math.max(0, action.sword / 2.2), cut = Math.max(0, -action.sword / .6);
   return {
-    crouch: .045 + attack * .1 + action.guard * .12,
-    lean: attack * .16 - action.recoil * .3 - drink * .08,
-    twist: windup * -.36 + cut * .38,
-    step: attack * .38 - action.recoil * .12,
+    crouch: .045 + attack * .1 + action.guard * .12 + dodge * .24,
+    lean: attack * .16 - action.recoil * .3 - drink * .08 - dodge * .3,
+    twist: windup * -.36 + cut * .38 - dodge * .35,
+    step: attack * .38 - action.recoil * .12 - dodge * .3,
     breath: reduced ? 0 : Math.sin(now / 480) * .008,
-    cloth: attack * .7 + action.recoil * .3,
+    cloth: attack * .7 + action.recoil * .3 + dodge * .65,
     arms: {
       right: { raise: -.35 - windup * 1.95 - cut * .65 - action.guard * .85,
         turn: -.15 + action.guard * .5, spread: .15 + windup * .25,

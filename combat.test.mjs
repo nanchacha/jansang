@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Combat, MODES, COOLDOWN, CHORD_MS, ATTACK_COMPONENTS, TELEGRAPH_MS, MAX_STRIKES, ITEM_USE_MS } from './combat.mjs';
+import { Combat, MODES, COOLDOWN, CHORD_MS, ATTACK_COMPONENTS, TELEGRAPH_MS, MAX_STRIKES, ITEM_USE_MS, DODGE_EXTRA_MS } from './combat.mjs';
 import { MOTIONS, motionAt, attackPoseAt, playerPoseAt, specialIntensityAt } from './motion.mjs';
 
 function seeded(seed) {
@@ -16,6 +16,98 @@ function parry(game, now, hit = game.nextHit()) {
   game.release(now, 'left'); game.release(now, 'right');
   return result;
 }
+
+test('dodge immunity covers every attack at impact, lasts just longer than parry, and cannot erase a late hit', () => {
+  assert.equal(DODGE_EXTRA_MS, 70);
+  for (const mode of Object.keys(MODES)) for (const [index, component] of ATTACK_COMPONENTS.entries()) {
+    for (const timing of ['early', 'first', 'last', 'late']) {
+      const rolls = [0, (index + .5) / ATTACK_COMPONENTS.length];
+      const game = new Combat({ mode, practiceAttack: component.type, random: () => rolls.shift() ?? .5 });
+      game.start(); game.attack(0); game.drain();
+      const hit = game.nextHit(), bossHp = game.bossHp, duration = game.dodgeDuration();
+      assert.equal(duration, MODES[mode].window * 2 + 70);
+      const offset = { early: -duration - 1, first: -duration + 1, last: 0, late: 1 }[timing];
+      const at = hit.at + offset;
+      assert.equal(game.dodge(at), 'dodge');
+      assert.ok(game.isDodgingAt(at));
+      assert.ok(game.isDodgingAt(at + duration - 1));
+      assert.equal(game.isDodgingAt(at + duration), false, 'immunity ends independently of recovery');
+      game.update(hit.at + MODES[mode].window + 1);
+      const avoided = timing === 'first' || timing === 'last';
+      assert.equal(hit.result, avoided ? 'dodge' : 'miss', component.type);
+      assert.equal(game.dodges, avoided ? 1 : 0);
+      assert.equal(game.hits, avoided ? 0 : 1);
+      assert.equal(game.hp, avoided || mode === 'practice' ? 5 : 5 - hit.damage);
+      assert.equal(game.bossHp, bossHp);
+      assert.equal(game.parries, 0); assert.equal(game.perfects, 0);
+      assert.equal(game.drain().filter(e => e.type === 'evade').length, avoided ? 1 : 0);
+      game.update(game.time);
+      assert.equal(game.drain().length, 0, 'frozen clock or repeated frame cannot resolve twice');
+    }
+  }
+});
+
+test('dodge and parry share recovery without queued inputs, immunity extension, or broken two-hand chords', () => {
+  const game = new Combat({ random: () => 0 });
+  assert.equal(game.dodge(0), 'inactive');
+  game.start();
+  assert.equal(game.dodge(0), 'inactive');
+  game.attack(0);
+  assert.equal(game.dodge(0), 'dodge'); // Too early, but still spends recovery.
+  for (const at of [1, 100, 300, 599]) {
+    assert.equal(game.dodge(at), 'cooldown');
+    assert.equal(game.tap(at, 'left'), 'cooldown'); game.release(at, 'left');
+    assert.equal(game.tap(at, 'right'), 'cooldown'); game.release(at, 'right');
+    assert.equal(game.dodgeAt, 0);
+    assert.equal(game.cooldownRemaining(at), COOLDOWN - at);
+  }
+  assert.equal(game.dodge(600), 'dodge');
+  assert.equal(game.dodgeAt, 600);
+  game.start(); game.attack(0);
+  const hit = game.nextHit(); hit.guard = 'both';
+  assert.equal(game.tap(hit.at, 'left'), 'pending');
+  assert.equal(game.dodge(hit.at + 1), 'cooldown', 'cannot cancel a parry into dodge');
+  assert.equal(game.tap(hit.at + 10, 'right'), 'perfect', 'second parry finger remains allowed');
+  game.release(hit.at + 10, 'left'); game.release(hit.at + 10, 'right');
+  assert.equal(game.dodgeAt, -Infinity);
+  assert.equal(game.cooldownRemaining(hit.at + 10), 590);
+  game.update(game.endAt);
+  assert.equal(game.dodge(game.time), 'inactive');
+  game.damageBoss(game.bossMaxHp);
+  assert.equal(game.dodge(game.time), 'inactive');
+  game.start(); game.hp = 1; game.attack(0); game.update(game.endAt);
+  assert.equal(game.state, 'lost'); assert.equal(game.dodge(game.time), 'inactive');
+  game.start();
+  assert.equal(game.dodgeAt, -Infinity); assert.equal(game.dodges, 0);
+  assert.equal(game.cooldownRemaining(0), 0);
+});
+
+test('400 randomized battles can finish without damage using dodges or mixed late parries and early dodges', () => {
+  for (const mode of Object.keys(MODES)) for (let seed = 1; seed <= 200; seed++) {
+    const game = new Combat({ mode, random: seeded(seed) });
+    game.start(); let strikes = 0;
+    while (game.state !== 'won') {
+      game.attack(game.time + 1);
+      if (game.state === 'won') break;
+      const plan = structuredClone(game.sequence);
+      for (const [i, hit] of game.sequence.entries()) {
+        if (seed % 2 === 0 && i % 2 === 0) {
+          assert.equal(parry(game, hit.at + MODES[mode].window - 1, hit), 'parry');
+        } else {
+          const at = hit.at - (i % 2 ? game.dodgeDuration() - 1 : 0);
+          assert.equal(game.dodge(at), 'dodge');
+          game.update(hit.at);
+          assert.equal(hit.result, 'dodge');
+        }
+        strikes++;
+      }
+      assert.deepEqual(game.sequence.map(hit => ({ ...hit, resolved: false, result: null })), plan);
+      game.update(game.endAt);
+    }
+    assert.equal(game.hits, 0); assert.equal(game.hp, 5); assert.equal(game.round, 30);
+    assert.equal(game.dodges + game.parries, strikes);
+  }
+});
 
 test('potions consume one player turn, heal up to the cap, preserve hit records, and reset only for a new battle', () => {
   let rolls = 0;
@@ -59,7 +151,7 @@ test('potions consume one player turn, heal up to the cap, preserve hit records,
   game.start();
   assert.equal(game.hp, 5); assert.equal(game.potions, 2); assert.equal(game.potionsUsed, 0);
   assert.equal(game.healAt, -Infinity); assert.equal(game.hits, 0);
-  game.damageBoss(240);
+  game.damageBoss(game.bossMaxHp);
   assert.equal(game.heal(1), false, 'finished battles cannot use items');
   const practice = new Combat({ mode: 'practice' }); practice.start();
   assert.equal(practice.heal(0), false); assert.equal(practice.potions, 2);
@@ -73,7 +165,7 @@ test('special strikes deal 2 or 3 HP once, remain fully parryable, and telegraph
         const rolls = [0, (index + .5) / ATTACK_COMPONENTS.length];
         const game = new Combat({ mode, practiceAttack: type, random: () => rolls.shift() ?? .5 });
         game.start();
-        if (phase === 2) game.damageBoss(120);
+        if (phase === 2) game.damageBoss(game.bossMaxHp / 2);
         game.attack(0); game.drain();
         const hit = game.sequence[0], bossHp = game.bossHp;
         assert.equal(hit.type, type); assert.equal(hit.damage, damage);
@@ -160,7 +252,7 @@ test('400 composed battles can be cleared without damage, with all components av
       const game = new Combat({ mode, random: seeded(Math.imul(seed, 0x9e3779b1)) });
       game.start();
       let now = 0;
-      while (game.state !== 'won' && game.round < 20) {
+      while (game.state !== 'won' && game.round < 30) {
         assert.equal(game.state, 'player');
         assert.ok(game.attack(now += 100));
         if (game.state === 'won') break;
@@ -183,7 +275,7 @@ test('400 composed battles can be cleared without damage, with all components av
         if (game.state !== 'won') game.update(now = game.endAt);
       }
       assert.equal(game.state, 'won');
-      assert.equal(game.round, 10, 'only ten direct attacks can deplete 240 HP');
+      assert.equal(game.round, 30, 'thirty direct attacks at damage 1 deplete 30 HP');
       assert.equal(game.bossHp, 0);
       assert.equal(game.hits, 0);
       assert.equal(game.parries, game.perfects);
@@ -210,7 +302,7 @@ test('4,000 generated turns give every strike a full cue and allow late-then-ear
         let rolls = 0;
         const game = new Combat({ mode, random: () => { rolls++; return random(); } });
         game.start();
-        if (phase === 2) game.damageBoss(120);
+        if (phase === 2) game.damageBoss(game.bossMaxHp / 2);
         game.attack(100);
         assert.ok(game.sequence.length >= 1 && game.sequence.length <= MAX_STRIKES);
         assert.ok(game.sequence.filter(hit => hit.damage > 1).length <= 1, 'at most one special per random turn');
@@ -260,7 +352,7 @@ test('all melee and ranged attacks block all damage with the correct guard in bo
       const rolls = [0, (index + .5) / ATTACK_COMPONENTS.length, hand === 'left' ? .25 : .75];
       const game = new Combat({ mode, random: () => rolls.shift() ?? .5 });
       game.start();
-      if (phase === 2) game.damageBoss(120);
+      if (phase === 2) game.damageBoss(game.bossMaxHp / 2);
       game.attack(0);
       assert.equal(game.sequence[0].type, component.type);
       assert.equal(game.sequence[0].hand, hand);
@@ -312,7 +404,7 @@ test('ranged attacks stay distant during flight, launch is too early to parry, a
       const rolls = mode === 'challenge' ? [0, (index + .5) / ATTACK_COMPONENTS.length] : [];
       const game = new Combat({ mode, practiceAttack: component.type, random: () => rolls.shift() ?? roll });
       game.start();
-      if (phase === 2) game.damageBoss(120);
+      if (phase === 2) game.damageBoss(game.bossMaxHp / 2);
       game.attack(0);
       const bossHp = game.bossHp;
       const plan = structuredClone(game.sequence);
@@ -362,7 +454,7 @@ test('phase changes preserve an announced composition, and fresh turns consume f
   game.start(); game.attack(0);
   const plan = structuredClone(game.sequence);
   const previousRolls = rolls;
-  game.damageBoss(120);
+  game.damageBoss(game.bossMaxHp / 2);
   assert.equal(game.phase, 2);
   assert.deepEqual(game.sequence, plan);
   assert.equal(rolls, previousRolls);
@@ -499,7 +591,7 @@ test('direction must match exactly: wrong side, one hand against fury, and both 
         assert.equal(game.tap(hit.at, first), 'pending');
         const result = input === 'both' ? game.tap(hit.at + 20, first === 'left' ? 'right' : 'left') : game.release(hit.at, first);
         assert.equal(result, input === hit.guard ? 'perfect' : 'wrong');
-        assert.equal(game.bossHp, 216);
+        assert.equal(game.bossHp, 29);
         game.update(game.endAt);
         assert.equal(game.hits, input === hit.guard ? 0 : 1);
       }
@@ -536,7 +628,7 @@ test('two-hand parries require overlapping fresh presses within 80ms, with BOTH 
       game.update(game.endAt);
       assert.equal(game.hits, scenario.ok ? 0 : 1, JSON.stringify({ mode, first, scenario }));
       assert.equal(game.parries, scenario.ok ? 1 : 0);
-      assert.equal(game.bossHp, 216);
+      assert.equal(game.bossHp, 29);
     }
   }
 });

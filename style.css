@@ -41,6 +41,17 @@
 @media(max-width:480px){.action-dock .parry-direction{display:none!important}.action-dock .action-button b{font-size:12px}#item-dialog{padding:20px}.result-stats b{font-size:19px}}
 @media(max-width:800px){.action-dock .parry-direction{font-size:20px}.action-dock .action-button{gap:5px}.timing-caption{font-size:10px;letter-spacing:0;padding:0 10px}}
 
+.action-dock{grid-template-columns:repeat(3,minmax(0,1fr))}
+.player-actions{grid-column:1/-1}
+.player-actions .action-button{height:50px}
+.dodge-button{justify-content:center;background:#292537;border-color:#b3a1dd;color:#ddd0fc}
+.dodge-button small{color:inherit;opacity:.85}
+.dodge-button.cooling{color:#b8adc7;border-color:#6d627d;background:#22212b;cursor:wait}
+.dodge-button .cooldown-fill{height:3px;background:#b3a1dd;pointer-events:none}
+.combat-feedback.dodge strong{color:#ddcaff}
+.dodge-rule{margin:10px 0 0;text-align:center;color:#c5b6de;font-size:10px;line-height:1.6}
+@media(max-width:800px){.action-dock .action-button{height:68px}.player-actions .action-button{height:46px}.player-actions .action-button>span{flex-direction:row;align-items:center;gap:9px}.parry-cooldown-rule{font-size:9px;margin-top:5px}}
+
 /* Expedition map uses the same combat palette and native buttons for every stop. */
 [hidden]{display:none!important}
 .view-tabs{display:flex;gap:24px;border-bottom:1px solid #414d3e;margin-bottom:30px}
@@ -61,6 +72,34 @@
 .expedition-status span{font-size:11px;color:#aab99e}
 .expedition-status b{font:23px var(--mono);color:#e4d2a7;white-space:nowrap}
 .expedition-status small{font:10px 'Noto Sans KR',sans-serif;color:#a5b399}
+.training-panel{border:1px solid #4e6152;border-radius:5px;margin:-6px 0 24px;background:#1b2c24}
+.training-panel.has-upgrade{border-color:#b5a576}
+.training-panel summary{display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:64px;padding:14px 20px;cursor:pointer;list-style:none;color:#e0d1aa}
+.training-panel summary::-webkit-details-marker{display:none}
+.training-panel summary:after{content:'+';font-size:20px;color:#b0bca1}
+.training-panel[open] summary:after{content:'−'}
+.training-panel summary>span{flex:1;font-size:14px}
+.training-panel summary>span small{font-size:10px;margin-left:12px;color:#abb89c}
+.training-panel.has-upgrade summary>span small{color:#e9cf91}
+.training-panel summary>b{font:25px var(--mono);white-space:nowrap;color:#d4e4ba}
+.training-panel summary>b small{font-size:11px;color:#a1b690}
+.training-content{padding:0 20px 18px;border-top:1px solid #445542}
+.training-content>p{font-size:11px;line-height:1.8;color:#adbaa3;margin:14px 0}
+.training-content>p b{font-weight:500;color:#d8c797}
+.training-options{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.training-option{display:flex;align-items:center;gap:12px;min-height:100px;width:100%;padding:16px;border:1px solid #829269;border-radius:4px;background:#34492f;color:#e3d6b1;text-align:left}
+.training-icon{font:25px Georgia,serif}
+.training-option>span:nth-child(2){flex:1;display:flex;flex-direction:column;gap:6px}
+.training-option b{font-size:13px;font-weight:500}.training-option b small{font:10px var(--mono);margin-left:6px}
+.training-option span>span,.training-option span>small{font-size:10px;line-height:1.5;color:#c0cdb3}
+.training-option>strong{font:15px var(--mono);white-space:nowrap}
+.training-option:hover:not(:disabled){background:#435c36;border-color:#d5bd83}
+.training-option:disabled{background:#222e25;border-color:#465743;color:#a7b09a;cursor:default}
+.training-option:disabled span>span,.training-option:disabled span>small{color:#a1ad97}
+.training-panel #training-feedback{color:#d5e8bd;margin-bottom:0}.training-panel #training-feedback:empty{display:none}
+.training-panel .training-note{font-size:10px;color:#a5b29c;margin-bottom:0}
+.battle-xp{font:14px var(--mono);color:#d7e8b1;margin:0 0 18px}
+@media(max-width:800px){.training-panel{margin-bottom:18px}.training-panel summary{padding:12px 15px}.training-panel summary>span small{display:block;margin:5px 0 0}.training-content{padding:0 15px 16px}.training-options{grid-template-columns:1fr;gap:9px}.training-option{min-height:94px;padding:13px}.training-content>p{font-size:10px}.battle-xp{font-size:12px}}
 .expedition-layout{display:grid;grid-template-columns:minmax(0,1fr) 310px;gap:28px;align-items:start}
 .map-panel{border:1px solid #48533e;border-radius:6px;overflow:hidden;background:#17251d}
 .map-caption{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 19px;font-size:10px;color:#a7b395;background:#233022;border-bottom:1px solid #435039}

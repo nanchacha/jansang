@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Vector3, Box3 } from './vendor/three/three.module.min.js';
 import { Combat, ATTACK_COMPONENTS } from './combat.mjs';
-import { bossRigPoseAt, playerRigPoseAt } from './motion.mjs';
+import { bossRigPoseAt, playerRigPoseAt, dodgeMotionAt } from './motion.mjs';
 import { createCharacter, poseCharacter } from './fighters3d.mjs';
 
 const values = object => Object.values(object).flatMap(value => typeof value === 'object' ? values(value) : [value]);
@@ -10,6 +10,18 @@ const samePose = (a, b) => values(a).forEach((value, i) => assert.ok(Math.abs(va
 test('3D joints stay connected, poses are continuous and deterministic, and combat timing is unchanged', () => {
   const boss = createCharacter(true), player = createCharacter(false);
   const idle = playerRigPoseAt(0, -Infinity, -Infinity, -Infinity);
+  const dodging = playerRigPoseAt(150, -Infinity, -Infinity, -Infinity, false, 0, 0);
+  assert.ok(dodging.crouch > idle.crouch + .2 && dodging.step < -.2, 'dodge bends knees and shifts weight back');
+  for (const at of [0, 150, 300, 500]) {
+    assert.ok(Math.abs(dodgeMotionAt(at - .001, 0) - dodgeMotionAt(at + .001, 0)) < .001);
+    const pose = playerRigPoseAt(at, -Infinity, -Infinity, -Infinity, false, 0, 0);
+    poseCharacter(player, pose, at);
+    assert.ok(values(pose).every(Number.isFinite));
+    assert.deepEqual(pose, playerRigPoseAt(at, -Infinity, -Infinity, -Infinity, false, 0, 0));
+    assert.equal(dodgeMotionAt(at, 0, true), 0);
+  }
+  assert.equal(dodgeMotionAt(500, 0), 0);
+  samePose(playerRigPoseAt(150, -Infinity, -Infinity, -Infinity, true, 0, 0), playerRigPoseAt(0, -Infinity, -Infinity, -Infinity, true));
   const drinking = playerRigPoseAt(0, -Infinity, -Infinity, -Infinity, false, 1);
   assert.ok(drinking.arms.left.elbow < idle.arms.left.elbow - 1, 'free hand raises the potion');
   assert.deepEqual(drinking.arms.right, idle.arms.right, 'drinking does not swing the sword');

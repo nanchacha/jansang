@@ -201,7 +201,7 @@ export class Fighters3D {
     this.renderer.compile(this.scene, this.camera);
   }
 
-  draw(ctx, { width, height, bossX, bossY, bossScale, bossLean, playerX, playerY, scale, hit, glowHit, parryWindow, now, attackAt, parryAt, hurtAt, healAt = -Infinity, reduced, enemy = 'boss' }) {
+  draw(ctx, { width, height, bossX, bossY, bossScale, bossLean, playerX, playerY, scale, hit, glowHit, parryWindow, now, attackAt, parryAt, hurtAt, healAt = -Infinity, dodgeAt = -Infinity, reduced, enemy = 'boss' }) {
     if (this.enemy !== enemy) {
       this.enemy = enemy;
       const [armor, trim] = enemy === 'elite' ? [0x634343, 0x996d62] : enemy === 'normal' ? [0x465263, 0x81909b] : [0x354d43, 0x597265];
@@ -221,7 +221,7 @@ export class Fighters3D {
     const healProgress = (now - healAt) / ITEM_USE_MS;
     this.player.potion.visible = healProgress >= 0 && healProgress < 1;
     const healing = this.player.potion.visible ? Math.sin(healProgress * Math.PI) : 0;
-    poseCharacter(this.player, playerRigPoseAt(now, attackAt, parryAt, hurtAt, reduced, healing), reduced ? 0 : now);
+    poseCharacter(this.player, playerRigPoseAt(now, attackAt, parryAt, hurtAt, reduced, healing, dodgeAt), reduced ? 0 : now);
     this.boss.root.position.set(bossX - width / 2, height / 2 - (bossY + 160 * bossScale), 0);
     this.boss.root.rotation.set(0, -.58, bossLean);
     this.boss.root.scale.setScalar(93 * bossScale);

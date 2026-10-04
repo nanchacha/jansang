@@ -4,10 +4,13 @@ export const MODES = {
   challenge: { window: 115, perfect: 48, label: '도전' },
   practice: { window: 185, perfect: 80, label: '연습' },
 };
-// Longer than a full parry window, shorter than the fastest challenge combo.
+// Shared by parry and dodge, including mistimed attempts.
 export const COOLDOWN = 600;
+export const DODGE_EXTRA_MS = 70;
 export const CHORD_MS = 80;
-export const BOSS_HP = 240;
+export const ENEMY_HP = { normal: 7, elite: 15, boss: 30 };
+export const BOSS_HP = ENEMY_HP.boss;
+export const BASE_ATTACK_DAMAGE = 1;
 export const MAX_HP = 5;
 export const HEAL_AMOUNT = 2;
 export const POTIONS = 2;
@@ -37,7 +40,7 @@ export const ATTACK_COMPONENTS = [
 
 // One clock, supplied by the caller: pausing and dropped frames cannot change a hit's timing.
 export class Combat {
-  constructor({ random = Math.random, mode = 'challenge', practiceAttack = 'random', enemy = 'boss', bossHp = BOSS_HP, profile = {} } = {}) {
+  constructor({ random = Math.random, mode = 'challenge', practiceAttack = 'random', enemy = 'boss', bossHp = ENEMY_HP[enemy] ?? BOSS_HP, profile = {} } = {}) {
     this.random = random;
     this.mode = MODES[mode] ? mode : 'challenge';
     this.practiceAttack = ATTACK_COMPONENTS.some(c => c.type === practiceAttack) ? practiceAttack : 'random';
@@ -52,7 +55,7 @@ export class Combat {
     this.maxHp = this.profile.maxHp ?? MAX_HP;
     this.hp = this.profile.hp ?? this.maxHp;
     this.potions = this.profile.potions ?? POTIONS;
-    this.attackDamage = this.profile.attackDamage ?? 24;
+    this.attackDamage = this.profile.attackDamage ?? BASE_ATTACK_DAMAGE;
     this.healAmount = this.profile.healAmount ?? HEAL_AMOUNT;
     this.attacks = 0;
     this.potionsUsed = 0;
@@ -62,10 +65,12 @@ export class Combat {
     this.round = 0;
     this.hits = 0;
     this.parries = 0;
+    this.dodges = 0;
     this.perfects = 0;
     this.streak = 0;
     this.bestStreak = 0;
     this.lastTap = -Infinity;
+    this.dodgeAt = -Infinity;
     this.held = new Set();
     this.pending = null;
     this.sequence = [];
@@ -123,7 +128,8 @@ export class Combat {
     const speed = this.phase === 2 ? 0.88 : 1;
     this.sequence = [];
     let windupAt = start;
-    const recovery = Math.max(240, MODES[this.mode].window, COOLDOWN + 2 * MODES[this.mode].window + 20 - TELEGRAPH_MS);
+    // Even a late parry followed by the earliest dodge must clear shared recovery.
+    const recovery = Math.max(240, COOLDOWN + MODES[this.mode].window + this.dodgeDuration() + 20 - TELEGRAPH_MS);
     for (let i = 0; i < count && this.sequence.length < MAX_STRIKES; i++) {
       const specialUsed = this.sequence.some(hit => hit.damage > 1);
       const pool = ATTACK_COMPONENTS.filter(c => (!c.hits || c.hits[0] <= MAX_STRIKES - this.sequence.length) && !((specialUsed || this.enemy === 'normal') && c.damage > 1));
@@ -181,6 +187,17 @@ export class Combat {
     return 'pending';
   }
 
+  dodge(now) {
+    this.update(now);
+    if (this.state !== 'boss') return 'inactive';
+    if (this.cooldownRemaining(now) > 0) return 'cooldown';
+    this.dodgeAt = now;
+    this.emit('dodge');
+    // Also cover an input exactly at impact, without granting retroactive immunity.
+    this.update(now);
+    return 'dodge';
+  }
+
   release(now, side) {
     this.update(now);
     this.held.delete(side);
@@ -230,6 +247,13 @@ export class Combat {
       this.resolveInput(first.side, first.at);
     }
     for (const hit of this.sequence) {
+      if (!hit.resolved && now >= hit.at && this.isDodgingAt(hit.at)) {
+        hit.resolved = true;
+        hit.result = 'dodge';
+        this.dodges++;
+        this.streak = 0;
+        this.emit('evade');
+      }
       if (!hit.resolved && now > hit.at + MODES[this.mode].window) {
         // A valid late press keeps its original timestamp while its chord is collected.
         if (this.pending && Math.abs(this.pending.at - hit.at) <= MODES[this.mode].window) continue;
@@ -254,5 +278,7 @@ export class Combat {
   }
 
   nextHit() { return this.sequence.find(h => !h.resolved); }
-  cooldownRemaining(now = this.time) { return Math.max(0, this.lastTap + COOLDOWN - now); }
+  dodgeDuration() { return MODES[this.mode].window * 2 + DODGE_EXTRA_MS; }
+  isDodgingAt(now) { return now >= this.dodgeAt && now < this.dodgeAt + this.dodgeDuration(); }
+  cooldownRemaining(now = this.time) { return Math.max(0, Math.max(this.lastTap, this.dodgeAt) + COOLDOWN - now); }
 }

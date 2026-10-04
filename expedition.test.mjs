@@ -1,10 +1,29 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Expedition, makeMap } from './expedition.mjs';
+import { Expedition, makeMap, XP_REWARDS } from './expedition.mjs';
 import { Combat, ATTACK_COMPONENTS } from './combat.mjs';
 
 const seeded = seed => () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
 const battleTypes = ['normal', 'elite', 'boss'];
+
+test('new battles and expedition nodes use attack 1 and enemy HP 7/15/30 at every floor', () => {
+  for (const [enemy, hp] of [['normal', 7], ['elite', 15], ['boss', 30]]) {
+    const fight = new Combat({ enemy });
+    fight.start();
+    assert.equal(fight.attackDamage, 1);
+    assert.equal(fight.bossMaxHp, hp); assert.equal(fight.bossHp, hp);
+    fight.attack(1); assert.equal(fight.bossHp, hp - 1);
+    fight.start(); assert.equal(fight.bossHp, hp); assert.equal(fight.attackDamage, 1);
+  }
+  const run = new Expedition(() => 0);
+  assert.equal(run.profile.attackDamage, 1);
+  for (const node of run.nodes.filter(n => battleTypes.includes(n.type))) {
+    assert.equal(node.hp, { normal: 7, elite: 15, boss: 30 }[node.type]);
+  }
+  run.enter('1-0'); run.battle.start();
+  assert.equal(run.battle.attackDamage, 1); assert.equal(run.battle.bossHp, 7);
+  run.battle.attack(1); assert.equal(run.battle.bossHp, 6);
+});
 
 function blockTurn(fight) {
   const hp = fight.bossHp;
@@ -25,6 +44,69 @@ function win(fight) {
   }
   assert.equal(fight.state, 'won');
 }
+
+test('experience is awarded once per victory at 10/15/30 and defeats grant no experience', () => {
+  assert.deepEqual(XP_REWARDS, { normal: 10, elite: 15, boss: 30 });
+  for (const type of battleTypes) for (const outcome of ['won', 'lost']) {
+    const run = new Expedition(() => 0);
+    const node = run.nodes.find(n => n.type === type);
+    // Focus each outcome without needing to play the preceding map floors.
+    run.current = node.id; run.state = 'battle';
+    const fight = run.battle = new Combat({ enemy: type, profile: run.profile, random: () => 0 });
+    fight.start();
+    assert.equal(run.settleBattle(), false); assert.equal(run.xp, 0);
+    if (outcome === 'won') win(fight);
+    else { fight.hp = 1; fight.attack(1); fight.update(fight.endAt); }
+    assert.equal(fight.state, outcome);
+    assert.equal(run.settleBattle(), true);
+    const reward = outcome === 'won' ? XP_REWARDS[type] : 0;
+    assert.equal(run.xp, reward); assert.equal(run.lastXpGain, reward); assert.equal(run.stats.xpEarned, reward);
+    assert.equal(run.settleBattle(), false);
+    assert.equal(run.xp, reward); assert.equal(run.stats.xpEarned, reward);
+  }
+});
+
+test('experience purchases spend the shown costs, persist in the next battle, respect limits, and reset for a new run', () => {
+  const run = new Expedition(() => 0);
+  assert.equal(run.train('power'), false); assert.equal(run.train('vitality'), false);
+  run.enter('1-0'); run.battle.start(); win(run.battle); run.settleBattle();
+  assert.equal(run.xp, 10); assert.equal(run.trainingCost('power'), 10);
+  assert.equal(run.canTrain('vitality'), false);
+  const node = run.current, path = [...run.visited];
+  assert.equal(run.train('power'), true);
+  assert.equal(run.xp, 0); assert.equal(run.profile.attackDamage, 2);
+  assert.equal(run.stats.xpEarned, 10, 'spending never changes lifetime earned XP');
+  assert.equal(run.trainingCost('power'), 20); assert.equal(run.train('power'), false);
+  assert.equal(run.current, node); assert.deepEqual(run.visited, path);
+  run.enter(run.available()[0]); run.battle.start();
+  assert.equal(run.battle.attackDamage, 2); assert.equal(run.lastXpGain, 0);
+  run.battle.attack(1); assert.equal(run.battle.bossHp, run.node.hp - 2);
+  run.xp = 100;
+  for (const state of ['battle', 'rest', 'reward', 'won', 'lost']) {
+    run.state = state; assert.equal(run.train('power'), false); assert.equal(run.xp, 100);
+  }
+  run.state = 'map';
+  for (const id of ['missing', '__proto__', 'constructor']) assert.equal(run.train(id), false);
+  assert.equal(run.train('power'), true); assert.equal(run.xp, 80);
+  assert.equal(run.trainingCost('power'), 30);
+  assert.equal(run.train('power'), true); assert.equal(run.xp, 50);
+  assert.equal(run.profile.attackDamage, 4); assert.equal(run.trainingCost('power'), null);
+  assert.equal(run.train('power'), false); assert.equal(run.xp, 50);
+  run.hp = 2; run.stats.hits = 3;
+  assert.equal(run.train('vitality'), true);
+  assert.equal(run.hp, 3); assert.equal(run.maxHp, 6); assert.equal(run.xp, 35);
+  assert.equal(run.trainingCost('vitality'), 25);
+  assert.equal(run.train('vitality'), true);
+  assert.equal(run.hp, 4); assert.equal(run.maxHp, 7); assert.equal(run.xp, 10);
+  assert.equal(run.stats.hits, 3); assert.equal(run.train('vitality'), false);
+  run.state = 'rest'; assert.equal(run.rest('vitality'), false);
+  const rested = new Expedition(() => 0); rested.state = 'rest'; rested.rest('vitality'); rested.xp = 100;
+  assert.equal(rested.train('vitality'), true); assert.equal(rested.maxHp, 7);
+  assert.equal(rested.train('vitality'), false, 'rest and XP share the maximum health cap');
+  const next = new Expedition();
+  assert.equal(next.xp, 0); assert.equal(next.stats.xpEarned, 0); assert.equal(next.profile.attackDamage, 1);
+  assert.deepEqual(next.training, { power: 0, vitality: 0 });
+});
 
 test('1,000 random maps give every route exactly 8 battles, 1 treasure and 1 late rest, with avoidable elites', () => {
   const variants = new Set(), treasureFloors = new Set(), restFloors = new Set();
@@ -76,6 +158,7 @@ test('200 complete expeditions remain no-hit clearable, preserve upgrades and ca
       assert.ok(run.enter(id));
       assert.equal(run.enter(id), false, 'cannot enter twice or bypass an unresolved encounter');
       if (run.state === 'battle') {
+        const previousXP = run.xp;
         const profile = { ...run.profile };
         const fight = run.battle; fight.start();
         assert.equal(fight.hp, profile.hp); assert.equal(fight.maxHp, profile.maxHp); assert.equal(fight.potions, profile.potions);
@@ -83,6 +166,7 @@ test('200 complete expeditions remain no-hit clearable, preserve upgrades and ca
         win(fight);
         if (run.node.type === 'elite') eliteCount++;
         assert.equal(fight.hits, 0); assert.ok(run.settleBattle());
+        assert.equal(run.xp, previousXP + XP_REWARDS[run.node.type]);
         assert.equal(run.settleBattle(), false, 'no duplicate stats or rewards');
         assert.equal(run.hp, profile.hp); assert.equal(run.potions, profile.potions);
       }
@@ -99,6 +183,8 @@ test('200 complete expeditions remain no-hit clearable, preserve upgrades and ca
     }
     assert.equal(run.visited.length, 10); assert.equal(new Set(run.visited).size, 10);
     assert.equal(run.stats.hits, 0); assert.ok(run.stats.perfects > 0); assert.equal(run.stats.battles, 8);
+    assert.equal(run.xp, run.visited.reduce((sum, id) => sum + (XP_REWARDS[run.nodes.find(n => n.id === id).type] || 0), 0));
+    assert.equal(run.stats.xpEarned, run.xp, 'rests and chests award no XP');
     assert.equal(run.available().length, 0); assert.equal(run.enter('1-0'), false);
   }
   assert.ok(eliteCount > 0);
@@ -111,7 +197,7 @@ test('rest choices cap healing, weapon and vitality; treasure never duplicates a
   assert.equal(run.rest('heal'), false); assert.equal(run.state, 'rest');
   run.hp = 4; assert.ok(run.rest('heal')); assert.equal(run.hp, 5);
   for (let i = 0; i < 2; i++) { run.state = 'rest'; assert.ok(run.rest('weapon')); }
-  run.state = 'rest'; assert.equal(run.rest('weapon'), false); assert.equal(run.profile.attackDamage, 36);
+  run.state = 'rest'; assert.equal(run.rest('weapon'), false); assert.equal(run.profile.attackDamage, 13);
   for (let i = 0; i < 2; i++) { run.state = 'rest'; assert.ok(run.rest('vitality')); }
   assert.equal(run.maxHp, 7); assert.equal(run.hp, 7);
   run.state = 'rest'; assert.equal(run.rest('vitality'), false); assert.ok(run.rest('leave'));
@@ -135,26 +221,25 @@ test('relic effects apply to real combat, including healing before a first strik
     const run = new Expedition(() => 0);
     run.relics = ['vanguard', 'apothecary', 'ward'].map(id => ({ id, rare }));
     run.hp = 1; run.maxHp = 7; run.weapon = 2;
-    const durable = new Combat({ profile: run.profile, random: () => 0 });
+    const durable = new Combat({ bossHp: 100, profile: run.profile, random: () => 0 });
     durable.start(); durable.attack(1); blockTurn(durable);
     const remaining = durable.bossHp; durable.attack(durable.time + 1);
-    assert.equal(durable.bossHp, remaining - 36, 'first-strike bonus is not repeated within the fight');
+    assert.equal(durable.bossHp, remaining - 13, 'first-strike bonus is not repeated within the fight');
     assert.ok(run.enter('1-0'));
     const fight = run.battle; fight.start();
     assert.equal(fight.heal(1), true); assert.equal(fight.hp, rare ? 5 : 4);
     assert.equal(fight.potions, 1); blockTurn(fight);
     assert.ok(fight.attack(fight.time + 1));
-    assert.equal(fight.bossHp, 72 - 36 - (rare ? 18 : 12));
-    assert.equal(fight.phase, 2, 'phase threshold follows encounter HP');
-    blockTurn(fight); win(fight); run.settleBattle();
+    assert.equal(fight.bossHp, 0, 'upgraded attacks clamp the new lower enemy HP at zero');
+    assert.equal(fight.state, 'won'); run.settleBattle();
     assert.equal(run.hp, rare ? 5 : 4); assert.equal(run.potions, 1); assert.equal(run.stats.potionsUsed, 1);
     assert.ok(run.enter(run.available()[0]));
     run.battle.start(); assert.equal(run.battle.hp, run.hp); assert.equal(run.battle.potions, 1);
-    run.battle.attack(1); assert.equal(run.battle.bossHp, run.node.hp - 36 - (rare ? 18 : 12), 'first strike renews once per fight');
+    run.battle.attack(1); assert.equal(run.battle.bossHp, Math.max(0, run.node.hp - 13 - (rare ? 18 : 12)), 'first strike renews once per fight');
     for (const type of ['judgment', 'execution']) {
       const index = ATTACK_COMPONENTS.findIndex(c => c.type === type);
       const rolls = [0, (index + .5) / ATTACK_COMPONENTS.length];
-      const special = new Combat({ profile: run.profile, random: () => rolls.shift() ?? .5 });
+      const special = new Combat({ bossHp: 100, profile: run.profile, random: () => rolls.shift() ?? .5 });
       special.start(); special.attack(1); const hit = special.sequence[0];
       assert.equal(hit.type, type);
       special.update(hit.at + 116);
