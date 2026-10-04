@@ -1,4 +1,5 @@
-import { Combat, MODES, COOLDOWN, BOSS_HP, MAX_HP, HEAL_AMOUNT, POTIONS, ITEM_USE_MS, TELEGRAPH_MS, ATTACK_COMPONENTS } from './combat.mjs';
+import { Combat, MODES, COOLDOWN, ITEM_USE_MS, TELEGRAPH_MS, ATTACK_COMPONENTS } from './combat.mjs';
+import { Expedition, NODE_TYPES, RELICS } from './expedition.mjs';
 import { motionAt, specialIntensityAt } from './motion.mjs';
 import { Fighters3D } from './fighters3d.mjs';
 import { CombatAudio } from './audio.mjs';
@@ -7,6 +8,8 @@ const $ = id => document.getElementById(id);
 const canvas = $('scene');
 const ctx = canvas.getContext('2d');
 let game = new Combat();
+let expedition = new Expedition();
+let expeditionBattle = false;
 let paused = false;
 let pausedAt = 0;
 let origin = performance.now();
@@ -45,6 +48,7 @@ canvas.dataset.renderer = fighters ? 'webgl2' : 'fallback';
 
 function resize() {
   const bounds = canvas.getBoundingClientRect();
+  if (!bounds.width || !bounds.height) return;
   width = bounds.width; height = bounds.height;
   hudBottom = document.querySelector('.boss-hud').getBoundingClientRect().bottom - bounds.top;
   $('special-warning').style.top = `${hudBottom + 13}px`;
@@ -110,17 +114,28 @@ function processEvents() {
 }
 
 function updateUI() {
-  $('boss-health').innerHTML = `${game.bossHp} <small>/ ${BOSS_HP}</small>`;
-  $('boss-fill').style.width = `${game.bossHp / BOSS_HP * 100}%`;
+  $('boss-health').innerHTML = `${game.bossHp} <small>/ ${game.bossMaxHp}</small>`;
+  $('boss-fill').style.width = `${game.bossHp / game.bossMaxHp * 100}%`;
   document.querySelector('.boss-health-track').setAttribute('aria-valuenow', game.bossHp);
+  document.querySelector('.boss-health-track').setAttribute('aria-valuemax', game.bossMaxHp);
+  $('enemy-name').textContent = { normal: '잊힌 수문장', elite: '붉은 집행자', boss: '공허의 파수꾼' }[game.enemy];
+  $('enemy-label').textContent = expeditionBattle ? `지점 ${expedition.node.floor} / ${NODE_TYPES[game.enemy].name}` : 'BOSS 01 / THE HOLLOW WARDEN';
+  const navigationLocked = running() || !$('death-screen').hidden;
+  $('show-map').disabled = navigationLocked;
+  $('show-solo').disabled = navigationLocked;
+  $('solo-settings').hidden = expeditionBattle;
   $('phase').textContent = `PHASE 0${game.phase}`;
   $('phase').classList.toggle('enraged', game.phase === 2);
-  $('hp-text').textContent = game.mode === 'practice' ? '∞' : `${game.hp} / 5`;
-  $('health-pips').setAttribute('aria-label', game.mode === 'practice' ? '연습 모드 무제한 생명력' : `생명력 ${game.hp}/5`);
+  $('hp-text').textContent = game.mode === 'practice' ? '∞' : `${game.hp} / ${game.maxHp}`;
+  if ($('health-pips').children.length !== game.maxHp) {
+    $('health-pips').innerHTML = '<i></i>'.repeat(game.maxHp);
+    $('arena-life').innerHTML = '<i></i>'.repeat(game.maxHp) + '<b></b>';
+  }
+  $('health-pips').setAttribute('aria-label', game.mode === 'practice' ? '연습 모드 무제한 생명력' : `생명력 ${game.hp}/${game.maxHp}`);
   [...$('health-pips').children].forEach((pip, i) => pip.classList.toggle('empty', i >= game.hp));
   $('arena-life').setAttribute('aria-label', $('health-pips').getAttribute('aria-label'));
   [...$('arena-life').querySelectorAll('i')].forEach((pip, i) => pip.classList.toggle('empty', i >= game.hp));
-  $('arena-life').querySelector('b').textContent = game.mode === 'practice' ? '∞' : `${game.hp} / 5`;
+  $('arena-life').querySelector('b').textContent = game.mode === 'practice' ? '∞' : `${game.hp} / ${game.maxHp}`;
   $('parry-count').textContent = String(game.parries).padStart(2, '0');
   $('perfect-count').textContent = String(game.perfects).padStart(2, '0');
   $('hit-count').textContent = String(game.hits).padStart(2, '0');
@@ -134,15 +149,15 @@ function updateUI() {
   $('attack').disabled = !playerTurn || paused;
   $('items').disabled = !playerTurn || paused;
   $('item-hint').textContent = `회복약 ×${game.potions}`;
-  $('potion-stock').textContent = `${game.potions} / ${POTIONS}`;
-  $('potion-effect').textContent = `생명력 +${HEAL_AMOUNT} · 최대 ${MAX_HP}칸`;
+  $('potion-stock').textContent = `${game.potions}개`;
+  $('potion-effect').textContent = `생명력 +${game.healAmount} · 최대 ${game.maxHp}칸`;
   const potionReason = game.mode === 'practice' ? '연습 모드는 생명력이 무제한입니다.'
-    : game.potions === 0 ? '이번 전투의 회복약을 모두 사용했습니다.'
-      : game.hp >= MAX_HP ? '체력이 가득 차 있습니다.' : '';
+    : game.potions === 0 ? '남은 회복약이 없습니다.'
+      : game.hp >= game.maxHp ? '체력이 가득 차 있습니다.' : '';
   $('use-potion').disabled = !playerTurn || paused || Boolean(potionReason);
-  $('potion-reason').textContent = potionReason || `지금 사용하면 ${Math.min(MAX_HP, game.hp + HEAL_AMOUNT)} / ${MAX_HP}로 회복합니다. 피격 기록은 유지됩니다.`;
+  $('potion-reason').textContent = potionReason || `지금 사용하면 ${Math.min(game.maxHp, game.hp + game.healAmount)} / ${game.maxHp}로 회복합니다. 피격 기록은 유지됩니다.`;
   Object.values(parryButtons).forEach(button => { button.disabled = !bossTurn || paused; });
-  $('attack-hint').textContent = playerTurn ? '빈틈 공격' : '내 차례';
+  $('attack-hint').textContent = playerTurn ? `피해 ${game.attackDamage + (game.attacks === 0 ? game.profile.firstStrikeBonus || 0 : 0)}` : '내 차례';
   $('pause').disabled = !running();
   activeModes.forEach(button => { button.disabled = running() || !$('death-screen').hidden; });
   $('practice-attack-label').hidden = game.mode !== 'practice';
@@ -168,6 +183,7 @@ function updateParryCooldown(now) {
 
 function start() {
   if (!$('death-screen').hidden) return;
+  if (expeditionBattle && ['won', 'lost'].includes(game.state)) { showMap(); return; }
   if (paused) { togglePause(); return; }
   clearParryInputs();
   audio.stop();
@@ -247,6 +263,7 @@ function togglePause() {
 
 async function finish(won) {
   clearParryInputs();
+  if (expeditionBattle) expedition.settleBattle();
   const nohit = won && game.hits === 0 && game.mode === 'challenge';
   $('intro-emblem').textContent = nohit ? '◈' : won ? '◇' : '↻';
   $('overlay-eyebrow').textContent = nohit ? 'A FLAWLESS VICTORY' : won ? 'WARDEN DEFEATED' : 'EVERY ATTEMPT COUNTS';
@@ -256,9 +273,14 @@ async function finish(won) {
   $('result-stats').hidden = false;
   $('start').innerHTML = '다시 도전 <svg><use href="#i-retry"/></svg>';
   $('overlay-foot').textContent = game.mode === 'practice' ? '연습 모드 · 최고 기록에 포함되지 않습니다' : '새로운 공격 조합이 기다립니다';
+  if (expeditionBattle) {
+    $('start').innerHTML = `${expedition.state === 'reward' ? '희귀 보상 선택' : ['won', 'lost'].includes(expedition.state) ? '원정 결과' : '지도로 돌아가기'} <svg><use href="#i-arrow"/></svg>`;
+    $('overlay-copy').textContent = won ? `${$('enemy-name').textContent}을 쓰러뜨렸습니다. 남은 체력과 아이템을 가지고 다음 길로 향하세요.` : '이번 원정의 끝입니다. 지나온 길과 기록을 확인하세요.';
+    $('overlay-foot').textContent = `원정 누적 피격 ${expedition.stats.hits}회 · 남은 회복약 ${expedition.potions}개`;
+  }
   $('overlay').hidden = !won;
   if (won) {
-    if (game.mode === 'challenge' && (!best || game.hits < best.hits || (game.hits === best.hits && game.elapsed < best.time))) {
+    if (!expeditionBattle && game.mode === 'challenge' && (!best || game.hits < best.hits || (game.hits === best.hits && game.elapsed < best.time))) {
       best = { hits: game.hits, time: game.elapsed };
       try { localStorage.setItem('afterimage-best-v1', JSON.stringify(best)); } catch { /* Private browsing can disable persistence. */ }
       renderBest();
@@ -284,6 +306,110 @@ async function finish(won) {
 function renderBest() {
   $('best-record').textContent = best && Number.isFinite(best.hits) && Number.isFinite(best.time) ? `${best.hits === 0 ? 'NO-HIT' : `피격 ${best.hits}회`} · ${timeString(best.time)}` : '첫 승리를 기다리는 중';
 }
+
+const nodeX = node => 110 + node.column * 210;
+const nodeY = node => 76 + (10 - node.floor) * 110;
+
+function locateNode() {
+  const target = expedition.nodes.find(n => n.id === expedition.available()[0]) || expedition.node || expedition.nodes[0];
+  $('map-scroll').scrollTop = nodeY(target) - $('map-scroll').clientHeight * .6;
+}
+
+function focusRoute() {
+  locateNode();
+  $('expedition-status').scrollIntoView({ block: 'start' });
+  $('map-canvas').querySelector('.reachable')?.focus({ preventScroll: true });
+}
+
+function showMap() {
+  if (running() || !$('death-screen').hidden) return;
+  audio.stop();
+  $('battle-view').hidden = true;
+  $('expedition-view').hidden = false;
+  $('show-map').setAttribute('aria-pressed', 'true');
+  $('show-solo').setAttribute('aria-pressed', 'false');
+  renderExpedition();
+  locateNode();
+  if (expedition.state !== 'map') $('journey-card').focus();
+  else focusRoute();
+}
+
+function renderExpedition() {
+  const run = expedition, available = run.available();
+  $('expedition-floor').textContent = String(run.node?.floor || 0).padStart(2, '0');
+  $('expedition-status').innerHTML = `<div><span>생명력</span><b>${run.hp} <small>/ ${run.maxHp}</small></b></div><div><span>공격력</span><b>${run.profile.attackDamage} <small>+${run.weapon} 강화</small></b></div><div><span>회복약</span><b>${run.potions} <small>개</small></b></div><div><span>누적 피격</span><b>${run.stats.hits} <small>회</small></b></div>`;
+  const edges = run.nodes.flatMap(node => node.next.map(id => {
+    const next = run.nodes.find(n => n.id === id);
+    const travelled = run.visited.includes(node.id) && (run.visited.includes(id) || id === run.current);
+    const open = node.id === run.current && available.includes(id);
+    return `<path class="${travelled ? 'travelled' : open ? 'open' : ''}" d="M${nodeX(node)},${nodeY(node)} L${nodeX(next)},${nodeY(next)}"/>`;
+  })).join('');
+  $('map-canvas').innerHTML = `<svg class="map-paths" viewBox="0 0 640 1150" preserveAspectRatio="none" aria-hidden="true">${edges}</svg><div class="map-destination">THE HOLLOW WARDEN</div>` + [...run.nodes].reverse().map(node => {
+    const type = NODE_TYPES[node.type], visited = run.visited.includes(node.id), current = node.id === run.current, reachable = available.includes(node.id);
+    return `<button class="map-node ${node.type} ${visited ? 'visited' : ''} ${reachable ? 'reachable' : ''} ${current ? 'current' : ''}" data-node="${node.id}" style="left:${nodeX(node) / 6.4}%;top:${nodeY(node)}px" ${reachable ? '' : 'disabled'} ${current ? 'aria-current="step"' : ''} aria-label="${node.floor}층 ${['왼쪽', '가운데', '오른쪽'][node.column]} 길 ${type.name}${current ? ', 현재 위치' : visited ? ', 방문 완료' : reachable ? ', 이동 가능' : ', 아직 이동 불가'}"><span class="node-ring" aria-hidden="true">${visited ? '✓' : type.icon + '︎'}</span><b>${type.name}</b><small>${current ? '현재 위치' : reachable ? '이동하기' : `${String(node.floor).padStart(2, '0')} 지점`}</small></button>`;
+  }).join('') + '<div class="map-origin">출발 · 당신의 길을 선택하세요</div>';
+  $('map-legend').innerHTML = Object.entries(NODE_TYPES).map(([id, type]) => `<span class="${id}"><i aria-hidden="true">${type.icon}︎</i>${type.name}</span>`).join('');
+  $('expedition-relics').innerHTML = run.relics.length ? run.relics.map(item => `<div class="owned-relic"><i aria-hidden="true">${RELICS[item.id].icon}︎</i><div><b>${item.rare ? '희귀 · ' : ''}${RELICS[item.id].name}</b><p>${RELICS[item.id].describe(item.rare)}</p></div></div>`).join('') : '<p class="empty-relics">아직 가져온 유물이 없습니다.<br>보물상자와 정예 전투에서 발견하세요.</p>';
+  const card = $('journey-card');
+  const choice = (id, icon, title, copy, disabled = false) => `<button class="journey-choice" data-choice="${id}" ${disabled ? 'disabled' : ''}><i aria-hidden="true">${icon}︎</i><span><b>${title}</b><small>${copy}</small></span><span aria-hidden="true">↗</span></button>`;
+  if (run.state === 'rest') {
+    card.innerHTML = `<span class="overline">A MOMENT OF RESPITE</span><h2>꺼지지 않은 불씨</h2><p>잠시 숨을 고르세요.<br>이번 휴식에서 한 가지만 선택할 수 있습니다.</p><div class="journey-choices">${choice('heal', '✚', '상처 돌보기', run.hp === run.maxHp ? '생명력이 이미 가득 찼습니다' : `생명력 +2 · ${run.hp} → ${Math.min(run.maxHp, run.hp + 2)}`, run.hp === run.maxHp)}${choice('weapon', '⚔', '무기 벼리기', run.weapon >= 2 ? '최대 강화에 도달했습니다' : `공격력 +6 · ${run.profile.attackDamage} → ${run.profile.attackDamage + 6}`, run.weapon >= 2)}${choice('vitality', '◇', '생명력 단련', run.maxHp >= 7 ? '최대 생명력에 도달했습니다' : `최대 생명력 ${run.maxHp} → ${run.maxHp + 1} · 현재 체력 +1`, run.maxHp >= 7)}</div><button class="journey-skip" data-choice="leave">선택 없이 떠나기</button>`;
+  } else if (run.state === 'reward') {
+    const rare = run.offers[0]?.rare;
+    card.innerHTML = `<span class="overline">${rare ? 'ELITE REWARD' : 'A FORGOTTEN TREASURE'}</span><h2>${rare ? '강적이 남긴 유산' : '잊힌 자의 보물'}</h2><p>${rare ? '정예를 꺾은 대가로 더 강한 보상을 얻습니다.' : '길을 지켜온 유물이 당신을 기다립니다.'}<br>보상 하나를 선택하세요.</p><div class="journey-choices">${run.offers.map(item => choice(item.id, RELICS[item.id].icon, `${item.rare ? '희귀 · ' : ''}${RELICS[item.id].name}`, RELICS[item.id].describe(item.rare))).join('')}</div><span class="choice-foot">유물은 이번 원정이 끝날 때까지 적용됩니다.</span>`;
+  } else if (['won', 'lost'].includes(run.state)) {
+    const won = run.state === 'won';
+    card.innerHTML = `<span class="overline">${won && run.stats.hits === 0 ? 'A FLAWLESS EXPEDITION' : won ? 'EXPEDITION COMPLETE' : 'THE JOURNEY ENDS'}</span><h2>${won ? '공허를 넘어서' : '다음 길은 다를 거예요'}</h2><p>${won ? run.stats.hits === 0 ? '전 원정 무피격 달성. 모든 순간을 막아냈습니다.' : '공허의 파수꾼을 쓰러뜨리고 원정을 완주했습니다.' : `${run.node.floor}번째 지점에서 쓰러졌습니다. 경험은 다음 원정에 남습니다.`}</p><dl class="journey-results"><div><dt>완료한 지점</dt><dd>${run.visited.length} / 10</dd></div><div><dt>승리한 전투</dt><dd>${run.stats.battles}회</dd></div><div><dt>전투 시간</dt><dd>${timeString(run.stats.elapsed)}</dd></div><div><dt>피격 / 퍼펙트</dt><dd>${run.stats.hits} / ${run.stats.perfects}</dd></div><div><dt>회복약 사용</dt><dd>${run.stats.potionsUsed}회</dd></div></dl><button class="new-expedition" data-new-run>새로운 원정 시작 <span>↗</span></button>`;
+  } else {
+    card.innerHTML = `<span class="overline">CHOOSE YOUR NEXT STEP</span><h2>${run.current ? '다음 길을 고르세요' : '한 걸음부터, 시작'}</h2><p>빛나는 지점을 눌러 이동하세요.<br>한 번 지나온 길로는 돌아갈 수 없습니다.</p><ol class="journey-rules"><li><b>전투</b><span>빛나는 팔과 무기를 읽고 방향에 맞춰 패링하세요.</span></li><li><b>휴식</b><span>회복, 무기 강화, 생명력 단련 중 하나를 선택하세요.</span></li><li><b>보물</b><span>유물과 회복약으로 마지막 전투를 준비하세요.</span></li></ol><div class="route-tip">정예 전투는 위험하지만, 더 강한 유물을 남깁니다.</div>`;
+  }
+}
+
+$('map-canvas').addEventListener('click', event => {
+  const id = event.target.closest('[data-node]')?.dataset.node;
+  if (!id || !expedition.enter(id)) return;
+  if (expedition.state === 'battle') {
+    game = expedition.battle;
+    expeditionBattle = true;
+    $('expedition-view').hidden = true;
+    $('battle-view').hidden = false;
+    resize(); start();
+    $('arena').scrollIntoView({ block: 'start' });
+    $('attack').focus({ preventScroll: true });
+  } else {
+    renderExpedition();
+    $('journey-card').focus();
+  }
+});
+$('journey-card').addEventListener('click', event => {
+  if (event.target.closest('[data-new-run]')) {
+    expedition = new Expedition(); renderExpedition(); focusRoute();
+    return;
+  }
+  const id = event.target.closest('[data-choice]')?.dataset.choice;
+  if (!id) return;
+  const changed = expedition.state === 'rest' ? expedition.rest(id) : expedition.claim(id);
+  if (changed) { renderExpedition(); focusRoute(); }
+});
+$('locate-node').addEventListener('click', locateNode);
+$('show-map').addEventListener('click', showMap);
+$('show-solo').addEventListener('click', () => {
+  if (running() || !$('death-screen').hidden) return;
+  expeditionBattle = false;
+  game = new Combat();
+  $('expedition-view').hidden = true; $('battle-view').hidden = false;
+  $('show-map').setAttribute('aria-pressed', 'false'); $('show-solo').setAttribute('aria-pressed', 'true');
+  activeModes.forEach(button => { const selected = button.dataset.mode === game.mode; button.classList.toggle('selected', selected); button.setAttribute('aria-pressed', String(selected)); });
+  $('mode-description').textContent = '생명력 5칸 · 회복약 2개. 원정과 별개의 전투입니다.';
+  $('overlay-eyebrow').textContent = 'A DUEL OF TIMING';
+  $('overlay-title').innerHTML = '한 번의 탭.<br><em>완벽한 방어.</em>';
+  $('overlay-copy').textContent = '빛나는 팔과 무기를 읽고 모든 공격을 막아내세요.';
+  $('overlay-foot').textContent = '아래에서 연습 모드와 공격 패턴을 선택할 수 있습니다.';
+  $('intro-emblem').textContent = '◇'; $('result-stats').hidden = true;
+  $('start').innerHTML = '전투 시작 <svg><use href="#i-arrow"/></svg>';
+  $('overlay').hidden = false;
+  resize(); updateUI();
+});
 
 $('start').addEventListener('click', start);
 $('items').addEventListener('click', () => {
@@ -471,9 +597,11 @@ function drawScene(now) {
   const specialWarning = special && !special.resolved && !paused && game.state === 'boss';
   $('special-warning').hidden = !specialWarning;
   $('arena').dataset.special = specialWarning ? String(special.damage) : '';
-  if (specialWarning && $('special-name').textContent !== special.name) {
-    $('special-name').textContent = special.name;
-    $('special-risk').textContent = `필살기 · 생명력 −${special.damage}`;
+  if (specialWarning) {
+    if ($('special-name').textContent !== special.name) $('special-name').textContent = special.name;
+    const damage = Math.max(1, special.damage - (game.profile.specialReduction || 0));
+    const risk = `필살기 · 생명력 −${damage}${damage < special.damage ? ' · 호부 적용' : ''}`;
+    if ($('special-risk').textContent !== risk) $('special-risk').textContent = risk;
   }
   if (specialIntensity > 0) {
     // Darken the environment before drawing characters, cues, and projectiles.
@@ -535,7 +663,7 @@ function drawScene(now) {
   // Reserve space for a raised blade as well as the resting silhouette.
   const bossTop = fighters?.available ? 265 : 150, bossBottom = 160;
   const framingTop = hudBottom + 48 * specialIntensity;
-  const bossScale = Math.min(scale * movement.depth, (height - 88 - framingTop) / (bossTop + bossBottom));
+  const bossScale = Math.min(scale * movement.depth, (height - 88 - framingTop) / (bossTop + bossBottom)) * (game.enemy === 'normal' ? .85 : game.enemy === 'elite' ? .94 : 1);
   const edge = Math.min(width / 2, (bossArtReady ? 235 : 230) * bossScale + 12);
   const bossX = Math.max(edge, Math.min(width - edge, width * .56 + shiftX * scale));
   const minBossY = framingTop + bossTop * bossScale + 8;
@@ -597,7 +725,7 @@ function drawScene(now) {
     anchors = fighters.draw(ctx, { width, height, bossX, bossY: bossY + floatY, bossScale, bossLean: lean,
       playerX, playerY, scale, hit: poseHit, glowHit, parryWindow, now,
       attackAt: game.attackAt, parryAt: parrying ? flashAt : -Infinity,
-      hurtAt: flashKind === 'hurt' ? flashAt : -Infinity, healAt: game.healAt, reduced: reducedMotion });
+      hurtAt: flashKind === 'hurt' ? flashAt : -Infinity, healAt: game.healAt, reduced: reducedMotion, enemy: game.enemy });
   } else {
     // Compatibility fallback only. No cutout animation is used by the 3D renderer.
     ctx.save(); ctx.translate(bossX, bossY); ctx.scale(-bossScale, bossScale);
@@ -712,6 +840,7 @@ function drawScene(now) {
 }
 
 function frame(realTime) {
+  if ($('battle-view').hidden) { lastFrame = realTime; requestAnimationFrame(frame); return; }
   // A long foreground stall must not silently skip a telegraph and deal unavoidable damage.
   if (realTime - lastFrame > 300 && running() && !paused) {
     origin += realTime - lastFrame;
@@ -747,4 +876,4 @@ function frame(realTime) {
 }
 
 $('parry-cooldown-rule').textContent = `패링 후 ${(COOLDOWN / 1000).toFixed(1)}초 대기 · 좌우 공통 · 성공·실패 모두 적용`;
-resize(); renderBest(); updateUI(); requestAnimationFrame(frame);
+resize(); renderBest(); updateUI(); renderExpedition(); locateNode(); requestAnimationFrame(frame);

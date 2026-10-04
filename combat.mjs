@@ -37,20 +37,27 @@ export const ATTACK_COMPONENTS = [
 
 // One clock, supplied by the caller: pausing and dropped frames cannot change a hit's timing.
 export class Combat {
-  constructor({ random = Math.random, mode = 'challenge', practiceAttack = 'random' } = {}) {
+  constructor({ random = Math.random, mode = 'challenge', practiceAttack = 'random', enemy = 'boss', bossHp = BOSS_HP, profile = {} } = {}) {
     this.random = random;
     this.mode = MODES[mode] ? mode : 'challenge';
     this.practiceAttack = ATTACK_COMPONENTS.some(c => c.type === practiceAttack) ? practiceAttack : 'random';
+    this.enemy = enemy;
+    this.bossMaxHp = bossHp;
+    this.profile = { ...profile };
     this.reset();
   }
 
   reset() {
     this.state = 'ready';
-    this.hp = MAX_HP;
-    this.potions = POTIONS;
+    this.maxHp = this.profile.maxHp ?? MAX_HP;
+    this.hp = this.profile.hp ?? this.maxHp;
+    this.potions = this.profile.potions ?? POTIONS;
+    this.attackDamage = this.profile.attackDamage ?? 24;
+    this.healAmount = this.profile.healAmount ?? HEAL_AMOUNT;
+    this.attacks = 0;
     this.potionsUsed = 0;
     this.healAt = -Infinity;
-    this.bossHp = BOSS_HP;
+    this.bossHp = this.bossMaxHp;
     this.phase = 1;
     this.round = 0;
     this.hits = 0;
@@ -83,8 +90,10 @@ export class Combat {
     if (this.state !== 'player') return false;
     this.round++;
     this.attackAt = now;
-    this.damageBoss(24);
-    this.emit('attack', { damage: 24 });
+    const damage = this.attackDamage + (this.attacks === 0 ? this.profile.firstStrikeBonus ?? 0 : 0);
+    this.attacks++;
+    this.damageBoss(damage);
+    this.emit('attack', { damage });
     if (this.state === 'won') return true;
     this.state = 'boss';
     this.beginSequence(now + 850);
@@ -93,8 +102,8 @@ export class Combat {
 
   heal(now) {
     this.update(now);
-    if (this.state !== 'player' || this.mode === 'practice' || this.hp >= MAX_HP || this.potions === 0) return false;
-    const amount = Math.min(HEAL_AMOUNT, MAX_HP - this.hp);
+    if (this.state !== 'player' || this.mode === 'practice' || this.hp >= this.maxHp || this.potions === 0) return false;
+    const amount = Math.min(this.healAmount, this.maxHp - this.hp);
     this.hp += amount;
     this.potions--;
     this.potionsUsed++;
@@ -110,14 +119,14 @@ export class Combat {
     // Compose fresh components every turn; each may contain one or more strikes.
     // Phase changes speed, never the component pool or a fixed turn pattern.
     const selected = this.mode === 'practice' && ATTACK_COMPONENTS.find(c => c.type === this.practiceAttack);
-    const count = selected ? 1 : 1 + Math.floor(this.random() * 4);
+    const count = selected ? 1 : 1 + Math.floor(this.random() * (this.enemy === 'normal' ? 2 : this.enemy === 'elite' ? 3 : 4));
     const speed = this.phase === 2 ? 0.88 : 1;
     this.sequence = [];
     let windupAt = start;
     const recovery = Math.max(240, MODES[this.mode].window, COOLDOWN + 2 * MODES[this.mode].window + 20 - TELEGRAPH_MS);
     for (let i = 0; i < count && this.sequence.length < MAX_STRIKES; i++) {
       const specialUsed = this.sequence.some(hit => hit.damage > 1);
-      const pool = ATTACK_COMPONENTS.filter(c => (!c.hits || c.hits[0] <= MAX_STRIKES - this.sequence.length) && !(specialUsed && c.damage > 1));
+      const pool = ATTACK_COMPONENTS.filter(c => (!c.hits || c.hits[0] <= MAX_STRIKES - this.sequence.length) && !((specialUsed || this.enemy === 'normal') && c.damage > 1));
       const component = selected || pool[Math.floor(this.random() * pool.length)];
       let hand = this.random() < 0.5 ? 'left' : 'right';
       const rhythm = this.random();
@@ -147,7 +156,7 @@ export class Combat {
     if (!this.bossHp) {
       this.state = 'won';
       this.emit('won');
-    } else if (this.bossHp <= BOSS_HP / 2 && this.phase === 1) {
+    } else if (this.bossHp <= this.bossMaxHp / 2 && this.phase === 1) {
       this.phase = 2;
       this.emit('phase');
     }
@@ -228,7 +237,7 @@ export class Combat {
         hit.result = 'miss';
         this.hits++;
         this.streak = 0;
-        const damage = this.mode === 'practice' ? 0 : hit.damage;
+        const damage = this.mode === 'practice' ? 0 : Math.max(1, hit.damage - (hit.damage > 1 ? this.profile.specialReduction ?? 0 : 0));
         this.hp = Math.max(0, this.hp - damage);
         this.emit('hurt', { damage, attackDamage: hit.damage });
         if (this.hp <= 0) {

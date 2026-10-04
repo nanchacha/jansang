@@ -142,7 +142,7 @@ export function createCharacter(boss = false) {
     mesh(potion, cylinder, gold, [0, .14, .085], [.048, .04, .048]);
     potion.visible = false;
   }
-  const character = { root, pelvis, spine, neck, arms, legs, cape, capeBase, core, boss, potion };
+  const character = { root, pelvis, spine, neck, arms, legs, cape, capeBase, core, boss, potion, armor, lightArmor };
   poseCharacter(character, boss ? bossRigPoseAt(null, 0, true) : playerRigPoseAt(0, -Infinity, -Infinity, -Infinity, true), 0);
   return character;
 }
@@ -201,7 +201,13 @@ export class Fighters3D {
     this.renderer.compile(this.scene, this.camera);
   }
 
-  draw(ctx, { width, height, bossX, bossY, bossScale, bossLean, playerX, playerY, scale, hit, glowHit, parryWindow, now, attackAt, parryAt, hurtAt, healAt = -Infinity, reduced }) {
+  draw(ctx, { width, height, bossX, bossY, bossScale, bossLean, playerX, playerY, scale, hit, glowHit, parryWindow, now, attackAt, parryAt, hurtAt, healAt = -Infinity, reduced, enemy = 'boss' }) {
+    if (this.enemy !== enemy) {
+      this.enemy = enemy;
+      const [armor, trim] = enemy === 'elite' ? [0x634343, 0x996d62] : enemy === 'normal' ? [0x465263, 0x81909b] : [0x354d43, 0x597265];
+      this.boss.armor.color.setHex(armor); this.boss.lightArmor.color.setHex(trim);
+      Object.values(this.boss.arms).forEach(arm => arm.armMat.color.setHex(armor));
+    }
     const dpr = Math.min(globalThis.devicePixelRatio || 1, 1.5);
     if (this.width !== width || this.height !== height || this.dpr !== dpr) {
       this.width = width; this.height = height; this.dpr = dpr;
