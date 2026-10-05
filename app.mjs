@@ -1,5 +1,5 @@
 import { Combat, MODES, COOLDOWN, ITEM_USE_MS, TELEGRAPH_MS, ATTACK_COMPONENTS } from './combat.mjs';
-import { Expedition, NODE_TYPES, RELICS, TRAINING } from './expedition.mjs';
+import { Expedition, NODE_TYPES, RELICS, TRAINING, ROUTES, XP_REWARDS } from './expedition.mjs';
 import { motionAt, specialIntensityAt, dodgeMotionAt } from './motion.mjs';
 import { Fighters3D } from './fighters3d.mjs';
 import { CombatAudio } from './audio.mjs';
@@ -318,7 +318,7 @@ function renderBest() {
   $('best-record').textContent = best && Number.isFinite(best.hits) && Number.isFinite(best.time) ? `${best.hits === 0 ? 'NO-HIT' : `피격 ${best.hits}회`} · ${timeString(best.time)}` : '첫 승리를 기다리는 중';
 }
 
-const nodeX = node => 110 + node.column * 210;
+const nodeX = node => 80 + node.column * 160;
 const nodeY = node => 76 + (10 - node.floor) * 110;
 
 function locateNode() {
@@ -346,7 +346,7 @@ function showMap() {
 }
 
 function renderExpedition() {
-  const run = expedition, available = run.available();
+  const run = expedition, available = run.available(), future = run.futureNodes();
   $('expedition-floor').textContent = String(run.node?.floor || 0).padStart(2, '0');
   $('expedition-status').innerHTML = `<div><span>생명력</span><b>${run.hp} <small>/ ${run.maxHp}</small></b></div><div><span>공격력</span><b>${run.profile.attackDamage} <small>${run.weapon + run.training.power}회 강화</small></b></div><div><span>회복약</span><b>${run.potions} <small>개</small></b></div><div><span>누적 피격</span><b>${run.stats.hits} <small>회</small></b></div>`;
   $('xp-balance').textContent = run.xp;
@@ -361,22 +361,34 @@ function renderExpedition() {
     const status = capped ? '최대 강화' : ['won', 'lost'].includes(run.state) ? '원정 종료' : run.state !== 'map' ? '다음 길 선택 시 강화 가능' : run.xp < cost ? `${cost - run.xp} XP 부족` : '강화하기';
     return `<button class="training-option" data-training="${id}" ${run.canTrain(id) ? '' : 'disabled'}><span class="training-icon" aria-hidden="true">${option.icon}︎</span><span><b>${option.name} <small>${run.training[id]} / ${option.costs.length}</small></b><span>${capped ? '최대치에 도달했습니다' : effect}</span><small>${status}</small></span><strong>${capped ? 'MAX' : `${cost} XP`}</strong></button>`;
   }).join('');
+  $('route-cards').innerHTML = ROUTES.map((route, column) => {
+    const nodes = run.nodes.filter(n => n.column === column || n.type === 'boss');
+    const count = type => nodes.filter(n => n.type === type).length;
+    const battles = nodes.filter(n => XP_REWARDS[n.type]).length;
+    const xp = nodes.reduce((sum, n) => sum + (XP_REWARDS[n.type] || 0), 0);
+    return `<article class="route-card route-${column}"><h3><span aria-hidden="true">0${column + 1}</span>${route.name}</h3><p>${route.description}</p><b>전투 ${battles} · 정예 ${count('elite')} 포함</b><span>휴식 ${count('rest')} · 보물 ${count('treasure')}</span><strong>${xp} XP · 희귀 보상 ${count('elite')}회</strong></article>`;
+  }).join('');
+  $('map-route-headings').innerHTML = ROUTES.map((route, column) => `<span class="route-${column}">${route.name}</span>`).join('');
   const edges = run.nodes.flatMap(node => node.next.map(id => {
     const next = run.nodes.find(n => n.id === id);
     const travelled = run.visited.includes(node.id) && (run.visited.includes(id) || id === run.current);
     const open = node.id === run.current && available.includes(id);
-    return `<path class="${travelled ? 'travelled' : open ? 'open' : ''}" d="M${nodeX(node)},${nodeY(node)} L${nodeX(next)},${nodeY(next)}"/>`;
+    const locked = !future.has(node.id) || !future.has(id);
+    return `<path class="${travelled ? 'travelled' : open ? 'open' : locked ? 'locked' : ''}" d="M${nodeX(node)},${nodeY(node)} L${nodeX(next)},${nodeY(next)}"/>`;
   })).join('');
   $('map-canvas').innerHTML = `<svg class="map-paths" viewBox="0 0 640 1150" preserveAspectRatio="none" aria-hidden="true">${edges}</svg><div class="map-destination">THE HOLLOW WARDEN</div>` + [...run.nodes].reverse().map(node => {
     const type = NODE_TYPES[node.type], visited = run.visited.includes(node.id), current = node.id === run.current, reachable = available.includes(node.id);
-    return `<button class="map-node ${node.type} ${visited ? 'visited' : ''} ${reachable ? 'reachable' : ''} ${current ? 'current' : ''}" data-node="${node.id}" style="left:${nodeX(node) / 6.4}%;top:${nodeY(node)}px" ${reachable ? '' : 'disabled'} ${current ? 'aria-current="step"' : ''} aria-label="${node.floor}층 ${['왼쪽', '가운데', '오른쪽'][node.column]} 길 ${type.name}${current ? ', 현재 위치' : visited ? ', 방문 완료' : reachable ? ', 이동 가능' : ', 아직 이동 불가'}"><span class="node-ring" aria-hidden="true">${visited ? '✓' : type.icon + '︎'}</span><b>${type.name}</b><small>${current ? '현재 위치' : reachable ? '이동하기' : `${String(node.floor).padStart(2, '0')} 지점`}</small></button>`;
+    const locked = !visited && !future.has(node.id), route = ROUTES[node.column];
+    const label = current ? '현재 위치' : visited ? '방문 완료' : locked ? '선택한 경로에서 접근 불가' : reachable ? '이동 가능' : '이후 경로';
+    const fork = node.next.length > 1 ? ' · 갈림길' : '';
+    return `<button class="map-node ${node.type} ${visited ? 'visited' : ''} ${reachable ? 'reachable' : ''} ${current ? 'current' : ''} ${locked ? 'locked' : ''}" data-node="${node.id}" style="left:${nodeX(node) / 6.4}%;top:${nodeY(node)}px" ${reachable ? '' : 'disabled'} ${current ? 'aria-current="step"' : ''} aria-label="${node.floor}층 ${route?.name || '최종 합류'} ${type.name}, ${label}${fork}"><span class="node-ring" aria-hidden="true">${visited ? '✓' : type.icon + '︎'}</span><b>${type.name}</b><small>${current ? '현재 위치' : reachable ? node.floor === 1 ? '여기서 출발' : '이동하기' : `${String(node.floor).padStart(2, '0')} 지점`}${fork}</small></button>`;
   }).join('') + '<div class="map-origin">출발 · 당신의 길을 선택하세요</div>';
   $('map-legend').innerHTML = Object.entries(NODE_TYPES).map(([id, type]) => `<span class="${id}"><i aria-hidden="true">${type.icon}︎</i>${type.name}</span>`).join('');
   $('expedition-relics').innerHTML = run.relics.length ? run.relics.map(item => `<div class="owned-relic"><i aria-hidden="true">${RELICS[item.id].icon}︎</i><div><b>${item.rare ? '희귀 · ' : ''}${RELICS[item.id].name}</b><p>${RELICS[item.id].describe(item.rare)}</p></div></div>`).join('') : '<p class="empty-relics">아직 가져온 유물이 없습니다.<br>보물상자와 정예 전투에서 발견하세요.</p>';
   const card = $('journey-card');
   const choice = (id, icon, title, copy, disabled = false) => `<button class="journey-choice" data-choice="${id}" ${disabled ? 'disabled' : ''}><i aria-hidden="true">${icon}︎</i><span><b>${title}</b><small>${copy}</small></span><span aria-hidden="true">↗</span></button>`;
   if (run.state === 'rest') {
-    card.innerHTML = `<span class="overline">A MOMENT OF RESPITE</span><h2>꺼지지 않은 불씨</h2><p>잠시 숨을 고르세요.<br>이번 휴식에서 한 가지만 선택할 수 있습니다.</p><div class="journey-choices">${choice('heal', '✚', '상처 돌보기', run.hp === run.maxHp ? '생명력이 이미 가득 찼습니다' : `생명력 +2 · ${run.hp} → ${Math.min(run.maxHp, run.hp + 2)}`, run.hp === run.maxHp)}${choice('weapon', '⚔', '무기 벼리기', run.weapon >= 2 ? '최대 강화에 도달했습니다' : `공격력 +6 · ${run.profile.attackDamage} → ${run.profile.attackDamage + 6}`, run.weapon >= 2)}${choice('vitality', '◇', '생명력 단련', run.maxHp >= 7 ? '최대 생명력에 도달했습니다' : `최대 생명력 ${run.maxHp} → ${run.maxHp + 1} · 현재 체력 +1`, run.maxHp >= 7)}</div><button class="journey-skip" data-choice="leave">선택 없이 떠나기</button>`;
+    card.innerHTML = `<span class="overline">A MOMENT OF RESPITE</span><h2>꺼지지 않은 불씨</h2><p>잠시 숨을 고르세요.<br>이번 휴식에서 한 가지만 선택할 수 있습니다.</p><div class="journey-choices">${choice('heal', '✚', '상처 돌보기', run.hp === run.maxHp ? '생명력이 이미 가득 찼습니다' : `생명력 +2 · ${run.hp} → ${Math.min(run.maxHp, run.hp + 2)}`, run.hp === run.maxHp)}${choice('weapon', '⚔', '무기 벼리기', run.weapon >= 2 ? '최대 강화에 도달했습니다' : `공격력 +1 · ${run.profile.attackDamage} → ${run.profile.attackDamage + 1}`, run.weapon >= 2)}${choice('vitality', '◇', '생명력 단련', run.maxHp >= 7 ? '최대 생명력에 도달했습니다' : `최대 생명력 ${run.maxHp} → ${run.maxHp + 1} · 현재 체력 +1`, run.maxHp >= 7)}</div><button class="journey-skip" data-choice="leave">선택 없이 떠나기</button>`;
   } else if (run.state === 'reward') {
     const rare = run.offers[0]?.rare;
     card.innerHTML = `<span class="overline">${rare ? 'ELITE REWARD' : 'A FORGOTTEN TREASURE'}</span><h2>${rare ? '강적이 남긴 유산' : '잊힌 자의 보물'}</h2><p>${rare ? '정예를 꺾은 대가로 더 강한 보상을 얻습니다.' : '길을 지켜온 유물이 당신을 기다립니다.'}<br>보상 하나를 선택하세요.</p><div class="journey-choices">${run.offers.map(item => choice(item.id, RELICS[item.id].icon, `${item.rare ? '희귀 · ' : ''}${RELICS[item.id].name}`, RELICS[item.id].describe(item.rare))).join('')}</div><span class="choice-foot">유물은 이번 원정이 끝날 때까지 적용됩니다.</span>`;
@@ -384,13 +396,15 @@ function renderExpedition() {
     const won = run.state === 'won';
     card.innerHTML = `<span class="overline">${won && run.stats.hits === 0 ? 'A FLAWLESS EXPEDITION' : won ? 'EXPEDITION COMPLETE' : 'THE JOURNEY ENDS'}</span><h2>${won ? '공허를 넘어서' : '다음 길은 다를 거예요'}</h2><p>${won ? run.stats.hits === 0 ? '전 원정 무피격 달성. 모든 순간을 막아냈습니다.' : '공허의 파수꾼을 쓰러뜨리고 원정을 완주했습니다.' : `${run.node.floor}번째 지점에서 쓰러졌습니다. 새 원정에서는 경험치와 강화가 초기화됩니다.`}</p><dl class="journey-results"><div><dt>완료한 지점</dt><dd>${run.visited.length} / 10</dd></div><div><dt>승리한 전투</dt><dd>${run.stats.battles}회</dd></div><div><dt>전투 시간</dt><dd>${timeString(run.stats.elapsed)}</dd></div><div><dt>피격 / 퍼펙트</dt><dd>${run.stats.hits} / ${run.stats.perfects}</dd></div><div><dt>회복약 사용</dt><dd>${run.stats.potionsUsed}회</dd></div><div><dt>획득 경험치 / 남은 경험치</dt><dd>${run.stats.xpEarned} / ${run.xp} XP</dd></div></dl><button class="new-expedition" data-new-run>새로운 원정 시작 <span>↗</span></button>`;
   } else {
-    card.innerHTML = `<span class="overline">CHOOSE YOUR NEXT STEP</span><h2>${run.current ? '다음 길을 고르세요' : '한 걸음부터, 시작'}</h2><p>빛나는 지점을 눌러 이동하세요.<br>한 번 지나온 길로는 돌아갈 수 없습니다.</p><ol class="journey-rules"><li><b>전투</b><span>빛나는 팔과 무기를 읽고 방향에 맞춰 패링하세요.</span></li><li><b>휴식</b><span>회복, 무기 강화, 생명력 단련 중 하나를 선택하세요.</span></li><li><b>보물</b><span>유물과 회복약으로 마지막 전투를 준비하세요.</span></li></ol><div class="route-tip">정예 전투는 위험하지만, 더 강한 유물을 남깁니다.</div>`;
+    const direction = !run.current ? '네 출발점 중 하나를 선택하세요. 위의 경로 안내에서 위험과 보상을 비교할 수 있습니다.' : available.length > 1 ? '갈림길입니다. 직진하거나 연결된 옆길로 이동하세요. 옮겨간 뒤에는 원래 길로 돌아올 수 없습니다.' : '외길 구간입니다. 빛나는 다음 지점으로만 이동할 수 있습니다.';
+    card.innerHTML = `<span class="overline">CHOOSE YOUR NEXT STEP</span><h2>${run.current ? ROUTES[run.node.column]?.name || '다음 길을 고르세요' : '네 개의 길, 하나의 선택'}</h2><p>${direction}</p><ol class="journey-rules"><li><b>전투</b><span>빛나는 팔과 무기를 읽고 방향에 맞춰 패링하세요.</span></li><li><b>휴식</b><span>회복, 무기 강화, 생명력 단련 중 하나를 선택하세요.</span></li><li><b>보물</b><span>유물과 회복약으로 마지막 전투를 준비하세요.</span></li></ol><div class="route-tip">${run.current ? '흐릿해진 지점은 선택한 경로에서 접근할 수 없습니다.' : '시련의 길은 휴식이 없는 대신, 정예 승리 보상 3회를 보장합니다.'}</div>`;
   }
 }
 
 $('map-canvas').addEventListener('click', event => {
   const id = event.target.closest('[data-node]')?.dataset.node;
   if (!id || !expedition.enter(id)) return;
+  $('route-guide').open = false;
   if (expedition.state === 'battle') {
     game = expedition.battle;
     expeditionBattle = true;

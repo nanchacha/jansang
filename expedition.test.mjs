@@ -14,6 +14,14 @@ test('new battles and expedition nodes use attack 1 and enemy HP 7/15/30 at ever
     assert.equal(fight.bossMaxHp, hp); assert.equal(fight.bossHp, hp);
     fight.attack(1); assert.equal(fight.bossHp, hp - 1);
     fight.start(); assert.equal(fight.bossHp, hp); assert.equal(fight.attackDamage, 1);
+    fight.drain();
+    fight.damageBoss(hp - 1);
+    assert.equal(fight.phase, enemy === 'normal' ? 1 : 2);
+    assert.equal(fight.drain().filter(e => e.type === 'phase').length, enemy === 'normal' ? 0 : 1);
+    fight.damageBoss(1);
+    assert.equal(fight.state, 'won');
+    assert.equal(fight.phase, enemy === 'normal' ? 1 : 2);
+    assert.ok(!fight.drain().some(e => e.type === 'phase'));
   }
   const run = new Expedition(() => 0);
   assert.equal(run.profile.attackDamage, 1);
@@ -108,42 +116,108 @@ test('experience purchases spend the shown costs, persist in the next battle, re
   assert.deepEqual(next.training, { power: 0, vitality: 0 });
 });
 
-test('1,000 random maps give every route exactly 8 battles, 1 treasure and 1 late rest, with avoidable elites', () => {
-  const variants = new Set(), treasureFloors = new Set(), restFloors = new Set();
+test('1,000 maps have four distinct routes, sparse non-crossing forks and about 80% combat', () => {
+  const variants = new Set(), forks = new Set();
   for (let seed = 0; seed < 1000; seed++) {
-    const nodes = makeMap(seeded(seed * 104729)), paths = new Map();
-    assert.equal(nodes.length, 28);
-    assert.equal(nodes.filter(n => battleTypes.includes(n.type)).length, 22);
-    assert.equal(nodes.filter(n => n.type === 'rest').length, 3);
-    assert.equal(nodes.filter(n => n.type === 'treasure').length, 3);
+    const nodes = makeMap(seeded(seed * 104729));
+    assert.equal(nodes.length, 37);
+    assert.equal(nodes.filter(n => battleTypes.includes(n.type)).length, 29);
+    assert.equal(nodes.filter(n => n.type === 'rest').length, 4);
+    assert.equal(nodes.filter(n => n.type === 'treasure').length, 4);
+    assert.equal(nodes.filter(n => n.floor === 1 && n.type === 'normal').length, 4);
+    assert.equal(nodes.filter(n => n.next.length === 2).length, 2);
     variants.add(nodes.map(n => n.type).join(','));
+    forks.add(nodes.filter(n => n.next.length === 2).map(n => n.id).join(','));
+    const budgets = [
+      { battles: 9, elites: 3, rests: 0, chests: 1, xp: 125 },
+      { battles: 8, elites: 2, rests: 1, chests: 1, xp: 110 },
+      { battles: 8, elites: 0, rests: 2, chests: 0, xp: 100 },
+      { battles: 7, elites: 1, rests: 1, chests: 2, xp: 95 },
+    ];
+    for (let column = 0; column < 4; column++) {
+      const route = nodes.filter(n => n.column === column || n.type === 'boss');
+      const count = type => route.filter(n => n.type === type).length;
+      assert.deepEqual({ battles: route.filter(n => battleTypes.includes(n.type)).length,
+        elites: count('elite'), rests: count('rest'), chests: count('treasure'),
+        xp: route.reduce((sum, n) => sum + (XP_REWARDS[n.type] || 0), 0) }, budgets[column]);
+    }
     for (const node of nodes) {
-      if (node.type === 'treasure') { assert.ok(node.floor >= 3 && node.floor <= 5); treasureFloors.add(node.floor); }
-      if (node.type === 'rest') { assert.ok(node.floor >= 7 && node.floor <= 9); restFloors.add(node.floor); }
       const parents = nodes.filter(n => n.next.includes(node.id));
       assert.equal(parents.length === 0, node.floor === 1, 'no unreachable nodes');
-      const previous = parents.flatMap(n => paths.get(n.id));
-      const states = (previous.length ? previous : [{ battles: 0, rests: 0, chests: 0 }]).map(state => ({
-        battles: state.battles + Number(battleTypes.includes(node.type)),
-        rests: state.rests + Number(node.type === 'rest'),
-        chests: state.chests + Number(node.type === 'treasure'),
-      }));
-      for (const state of states) {
-        assert.ok(state.rests <= 1 && state.chests <= 1, 'branching cannot add extra non-combat stops');
-        if (node.type === 'boss') assert.deepEqual(state, { battles: 8, rests: 1, chests: 1 });
-      }
-      // Equivalent path histories need only one representative for subsequent floors.
-      paths.set(node.id, [...new Map(states.map(state => [JSON.stringify(state), state])).values()]);
+      assert.equal(new Set(node.next).size, node.next.length);
       if (node.floor === 10) { assert.equal(node.type, 'boss'); assert.equal(node.next.length, 0); continue; }
-      const next = node.next.map(id => nodes.find(n => n.id === id));
-      assert.ok(node.floor === 9 ? next.length === 1 : next.length >= 2 && next.length <= 3);
-      assert.ok(next.some(n => n.type !== 'elite'));
-      for (const destination of next) { assert.equal(destination.floor, node.floor + 1); assert.ok(Math.abs(destination.column - node.column) <= 1); }
+      assert.ok(node.next.length === 1 || node.next.length === 2);
+      for (const id of node.next) {
+        const next = nodes.find(n => n.id === id);
+        assert.equal(next.floor, node.floor + 1);
+        if (next.type === 'boss') continue;
+        if (next.column !== node.column) {
+          assert.equal(node.floor, 5, 'only the middle fork permits changing lanes');
+          assert.equal(Math.floor(node.column / 2), Math.floor(next.column / 2), 'regions stay isolated');
+        }
+        for (const other of nodes.filter(n => n.floor === node.floor)) for (const otherId of other.next) {
+          const otherNext = nodes.find(n => n.id === otherId);
+          assert.ok((node.column - other.column) * (next.column - otherNext.column) >= 0, 'paths never cross between nodes');
+        }
+      }
     }
+    const paths = [];
+    const walk = (node, path = []) => {
+      path = [...path, node];
+      if (!node.next.length) paths.push(path);
+      else for (const id of node.next) walk(nodes.find(n => n.id === id), path);
+    };
+    nodes.filter(n => n.floor === 1).forEach(n => walk(n));
+    assert.equal(paths.length, 6, 'four straight routes and two meaningful alternatives');
+    let battles = 0;
+    for (const path of paths) {
+      assert.equal(path.length, 10); assert.equal(path.at(-1).type, 'boss');
+      const count = path.filter(n => battleTypes.includes(n.type)).length;
+      assert.ok(count >= 7 && count <= 9, 'forks cannot farm extra support stops');
+      battles += count;
+    }
+    assert.ok(battles / paths.length >= 7.8 && battles / paths.length <= 8.2);
   }
-  assert.ok(variants.size > 100, 'maps vary between expeditions');
-  assert.deepEqual([...treasureFloors].sort(), [3, 4, 5]);
-  assert.deepEqual([...restFloors].sort(), [7, 8, 9]);
+  assert.ok(variants.size > 100, 'encounter positions vary between expeditions');
+  assert.equal(forks.size, 4, 'each pair varies its one-way fork direction');
+});
+
+test('choosing a start locks other regions, and taking a fork permanently leaves the original lane', () => {
+  const finishStop = run => {
+    if (run.state === 'battle') { run.battle.start(); win(run.battle); run.settleBattle(); }
+    if (run.state === 'rest') assert.ok(run.rest('leave'));
+    if (run.state === 'reward') assert.ok(run.claim(run.offers[0].id));
+  };
+  for (const roll of [0, .99]) for (let column = 0; column < 4; column++) {
+    const run = new Expedition(() => roll);
+    assert.deepEqual(run.available(), ['1-0', '1-1', '1-2', '1-3']);
+    assert.equal(run.futureNodes().size, 37);
+    for (let floor = 1; floor <= 5; floor++) {
+      assert.ok(run.enter(`${floor}-${column}`)); finishStop(run);
+      for (let other = 0; other < 4; other++) {
+        if (other !== column) assert.equal(run.enter(`${floor}-${other}`), false);
+        if (Math.floor(other / 2) !== Math.floor(column / 2)) {
+          assert.equal(run.enter(`${floor + 1}-${other}`), false);
+          assert.equal(run.futureNodes().has(`9-${other}`), false);
+        }
+      }
+      if (floor < 5) assert.deepEqual(run.available(), [`${floor + 1}-${column}`]);
+    }
+    const fork = run.available().find(id => !id.endsWith(`-${column}`));
+    const target = fork || run.available()[0];
+    const nextColumn = run.nodes.find(n => n.id === target).column;
+    assert.ok(run.enter(target)); finishStop(run);
+    if (fork) assert.equal(run.futureNodes().has(`9-${column}`), false);
+    assert.ok(run.futureNodes().has('10-1'));
+    for (let floor = 7; floor <= 9; floor++) {
+      assert.deepEqual(run.available(), [`${floor}-${nextColumn}`]);
+      assert.equal(run.enter(`${floor}-${(nextColumn + 1) % 4}`), false);
+      assert.ok(run.enter(`${floor}-${nextColumn}`)); finishStop(run);
+    }
+    assert.deepEqual(run.available(), ['10-1']);
+    assert.ok(run.enter('10-1')); finishStop(run);
+    assert.equal(run.state, 'won'); assert.equal(run.stats.hits, 0);
+  }
 });
 
 test('200 complete expeditions remain no-hit clearable, preserve upgrades and cannot skip or repeat stops', () => {
@@ -182,7 +256,8 @@ test('200 complete expeditions remain no-hit clearable, preserve upgrades and ca
       assert.equal(run.enter(id), false, 'cannot revisit a cleared stop');
     }
     assert.equal(run.visited.length, 10); assert.equal(new Set(run.visited).size, 10);
-    assert.equal(run.stats.hits, 0); assert.ok(run.stats.perfects > 0); assert.equal(run.stats.battles, 8);
+    assert.equal(run.stats.hits, 0); assert.ok(run.stats.perfects > 0);
+    assert.equal(run.stats.battles, run.visited.filter(id => battleTypes.includes(run.nodes.find(n => n.id === id).type)).length);
     assert.equal(run.xp, run.visited.reduce((sum, id) => sum + (XP_REWARDS[run.nodes.find(n => n.id === id).type] || 0), 0));
     assert.equal(run.stats.xpEarned, run.xp, 'rests and chests award no XP');
     assert.equal(run.available().length, 0); assert.equal(run.enter('1-0'), false);
@@ -196,8 +271,11 @@ test('rest choices cap healing, weapon and vitality; treasure never duplicates a
   run.state = 'rest';
   assert.equal(run.rest('heal'), false); assert.equal(run.state, 'rest');
   run.hp = 4; assert.ok(run.rest('heal')); assert.equal(run.hp, 5);
-  for (let i = 0; i < 2; i++) { run.state = 'rest'; assert.ok(run.rest('weapon')); }
-  run.state = 'rest'; assert.equal(run.rest('weapon'), false); assert.equal(run.profile.attackDamage, 13);
+  for (let i = 0; i < 2; i++) {
+    run.state = 'rest'; assert.ok(run.rest('weapon'));
+    assert.equal(run.profile.attackDamage, 1 + (i + 1));
+  }
+  run.state = 'rest'; assert.equal(run.rest('weapon'), false); assert.equal(run.profile.attackDamage, 3);
   for (let i = 0; i < 2; i++) { run.state = 'rest'; assert.ok(run.rest('vitality')); }
   assert.equal(run.maxHp, 7); assert.equal(run.hp, 7);
   run.state = 'rest'; assert.equal(run.rest('vitality'), false); assert.ok(run.rest('leave'));
@@ -224,7 +302,7 @@ test('relic effects apply to real combat, including healing before a first strik
     const durable = new Combat({ bossHp: 100, profile: run.profile, random: () => 0 });
     durable.start(); durable.attack(1); blockTurn(durable);
     const remaining = durable.bossHp; durable.attack(durable.time + 1);
-    assert.equal(durable.bossHp, remaining - 13, 'first-strike bonus is not repeated within the fight');
+    assert.equal(durable.bossHp, remaining - 3, 'first-strike bonus is not repeated within the fight');
     assert.ok(run.enter('1-0'));
     const fight = run.battle; fight.start();
     assert.equal(fight.heal(1), true); assert.equal(fight.hp, rare ? 5 : 4);
@@ -235,7 +313,7 @@ test('relic effects apply to real combat, including healing before a first strik
     assert.equal(run.hp, rare ? 5 : 4); assert.equal(run.potions, 1); assert.equal(run.stats.potionsUsed, 1);
     assert.ok(run.enter(run.available()[0]));
     run.battle.start(); assert.equal(run.battle.hp, run.hp); assert.equal(run.battle.potions, 1);
-    run.battle.attack(1); assert.equal(run.battle.bossHp, Math.max(0, run.node.hp - 13 - (rare ? 18 : 12)), 'first strike renews once per fight');
+    run.battle.attack(1); assert.equal(run.battle.bossHp, Math.max(0, run.node.hp - 3 - (rare ? 18 : 12)), 'first strike renews once per fight');
     for (const type of ['judgment', 'execution']) {
       const index = ATTACK_COMPONENTS.findIndex(c => c.type === type);
       const rolls = [0, (index + .5) / ATTACK_COMPONENTS.length];

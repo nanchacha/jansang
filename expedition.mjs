@@ -5,6 +5,12 @@ export const TRAINING = {
   power: { name: '검술 수련', icon: '⚔', costs: [10, 20, 30] },
   vitality: { name: '생명력 단련', icon: '◇', costs: [15, 25] },
 };
+export const ROUTES = [
+  { name: '시련의 길', description: '정예 연전 · 휴식 없는 고위험 경로' },
+  { name: '사냥의 길', description: '정예 보상과 한 번의 재정비' },
+  { name: '안식의 길', description: '정예 없이 두 번의 회복·강화' },
+  { name: '탐색의 길', description: '전투를 줄이고 보물 두 번 확보' },
+];
 
 export const NODE_TYPES = {
   normal: { name: '일반 전투', icon: '⚔', description: '짧은 교전. 체력과 회복약을 아끼세요.' },
@@ -22,24 +28,27 @@ export const RELICS = {
 
 export function makeMap(random = Math.random) {
   const nodes = [];
-  // Reserve two support floors so every branching route has 8 battles and 2 breaks.
-  const treasureFloor = 3 + Math.floor(random() * 3);
-  const restFloor = 7 + Math.floor(random() * 3);
+  const pick = values => values[Math.floor(random() * values.length)];
+  const early = pick([3, 4]), late = pick([7, 8]);
+  // Each lane has a fixed risk/reward budget; encounter positions still vary.
+  const encounters = [
+    { [pick([2, 3])]: 'elite', [pick([4, 5])]: 'elite', [pick([6, 9])]: 'elite', [late]: 'treasure' },
+    { [pick([2, 5])]: 'elite', [early]: 'treasure', [pick([6, 9])]: 'elite', [late]: 'rest' },
+    { [early]: 'rest', [late]: 'rest' },
+    { [early]: 'treasure', [pick([6, 9])]: 'elite', [late]: 'treasure', [15 - late]: 'rest' },
+  ];
   for (let floor = 1; floor <= 10; floor++) {
-    let eliteUsed = false;
-    for (const column of floor === 10 ? [1] : [0, 1, 2]) {
-      const parents = nodes.filter(n => n.floor === floor - 1 && (floor === 10 || Math.abs(n.column - column) <= 1));
-      let type = random() < .2 && !eliteUsed ? 'elite' : 'normal';
-      if (floor === treasureFloor) type = 'treasure';
-      if (floor === restFloor) type = 'rest';
-      if (floor === 1) type = 'normal';
-      if (floor === 10) type = 'boss';
-      if (type === 'elite') eliteUsed = true;
-      const node = { id: `${floor}-${column}`, floor, column, type, next: [],
-        hp: ENEMY_HP[type] ?? 0 };
-      parents.forEach(parent => parent.next.push(node.id));
-      nodes.push(node);
+    for (const column of floor === 10 ? [1.5] : [0, 1, 2, 3]) {
+      const type = floor === 10 ? 'boss' : encounters[column][floor] || 'normal';
+      nodes.push({ id: floor === 10 ? '10-1' : `${floor}-${column}`, floor, column, type,
+        next: floor === 10 ? [] : [floor === 9 ? '10-1' : `${floor + 1}-${column}`], hp: ENEMY_HP[type] ?? 0 });
     }
+  }
+  // One one-way fork per pair, midway through the run. No crossings between
+  // the two regions and no return to a lane once it has been left.
+  for (const pair of [[0, 1], [2, 3]]) {
+    const from = pick(pair), to = pair.find(column => column !== from);
+    nodes.find(n => n.id === `5-${from}`).next.push(`6-${to}`);
   }
   return nodes;
 }
@@ -59,13 +68,18 @@ export class Expedition {
   get node() { return this.nodes.find(n => n.id === this.current); }
   get profile() {
     const rank = id => { const item = this.relics.find(r => r.id === id); return item ? item.rare ? 2 : 1 : 0; };
-    return { hp: this.hp, maxHp: this.maxHp, potions: this.potions, attackDamage: BASE_ATTACK_DAMAGE + this.weapon * 6 + this.training.power,
+    return { hp: this.hp, maxHp: this.maxHp, potions: this.potions, attackDamage: BASE_ATTACK_DAMAGE + this.weapon + this.training.power,
       firstStrikeBonus: rank('vanguard') ? rank('vanguard') === 2 ? 18 : 12 : 0,
       healAmount: 2 + rank('apothecary'), specialReduction: rank('ward') };
   }
   available() {
     if (this.state !== 'map') return [];
     return this.current ? this.node.next : this.nodes.filter(n => n.floor === 1).map(n => n.id);
+  }
+  futureNodes() {
+    const future = new Set(this.current ? [this.current] : this.nodes.filter(n => n.floor === 1).map(n => n.id));
+    for (const node of this.nodes) if (future.has(node.id)) for (const id of node.next) future.add(id);
+    return future;
   }
   enter(id) {
     if (!this.available().includes(id)) return false;

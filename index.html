@@ -33,7 +33,7 @@
       <div class="section-heading"><span><span class="tiny-cross">+</span> THE PARRY EXPERIMENT</span><span>승리의 조건은, 타이밍.</span></div>
       <nav class="view-tabs" aria-label="플레이 방식"><button id="show-map" aria-pressed="true">원정 지도 <span>EXPEDITION</span></button><button id="show-solo" aria-pressed="false">단일 전투 · 연습</button></nav>
       <section id="expedition-view" aria-label="원정 지도">
-        <header class="expedition-heading"><div><span class="overline">CHAPTER 01 / THE HOLLOW ROAD</span><h1>공허로 향하는 길</h1><p>전투 8칸 · 휴식 1칸 · 보물 1칸</p></div><div class="expedition-progress"><strong id="expedition-floor">00</strong><span>/ 10 지점</span></div></header>
+        <header class="expedition-heading"><div><span class="overline">CHAPTER 01 / THE HOLLOW ROAD</span><h1>공허로 향하는 길</h1><p>네 개의 출발점 · 선택한 길에 따라 달라지는 위험과 보상</p></div><div class="expedition-progress"><strong id="expedition-floor">00</strong><span>/ 10 지점</span></div></header>
         <div id="expedition-status" class="expedition-status" aria-label="원정 상태"></div>
         <details class="training-panel" id="training-panel">
           <summary id="training-toggle"><span>캐릭터 강화 <small id="training-ready">경험치로 능력 성장</small></span><b><span id="xp-balance">0</span> <small>XP</small></b></summary>
@@ -44,9 +44,15 @@
             <p class="training-note" id="training-note">경험치와 강화는 이번 원정에 적용됩니다. 새 원정·새로고침 시 초기화됩니다.</p>
           </div>
         </details>
+        <details class="route-guide" id="route-guide" open>
+          <summary>길마다 다른 대가 <small>직진 기준 · 최종 보스 포함</small></summary>
+          <div class="route-cards" id="route-cards"></div>
+          <p>5번째 지점의 갈림길에서만 이웃 길로 이동할 수 있습니다. 시련·사냥과 안식·탐색은 최종 보스에서만 합류합니다.</p>
+        </details>
         <div class="expedition-layout">
           <section class="map-panel" aria-label="분기 지도">
-            <div class="map-caption"><span>↑ 위로 이동하며 길을 선택하세요</span><button id="locate-node">현재 위치</button></div>
+            <div class="map-caption"><span>↑ 연결된 길로만 이동 · 되돌아갈 수 없음</span><button id="locate-node">현재 위치</button></div>
+            <div class="map-route-headings" id="map-route-headings"></div>
             <div class="map-scroll" id="map-scroll" tabindex="0" aria-label="원정 경로. 위로 스크롤하면 다음 지점이 보입니다."><div class="map-canvas" id="map-canvas"></div></div>
             <div class="map-legend" id="map-legend"></div>
           </section>

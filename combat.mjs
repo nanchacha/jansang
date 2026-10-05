@@ -162,7 +162,7 @@ export class Combat {
     if (!this.bossHp) {
       this.state = 'won';
       this.emit('won');
-    } else if (this.bossHp <= this.bossMaxHp / 2 && this.phase === 1) {
+    } else if (this.enemy !== 'normal' && this.bossHp <= this.bossMaxHp / 2 && this.phase === 1) {
       this.phase = 2;
       this.emit('phase');
     }
