@@ -1,13 +1,13 @@
-import { Combat, MODES, COOLDOWN, ITEM_USE_MS, TELEGRAPH_MS, ATTACK_COMPONENTS } from './combat.mjs';
-import { Expedition, NODE_TYPES, RELICS, TRAINING, ROUTES, XP_REWARDS } from './expedition.mjs';
-import { motionAt, specialIntensityAt, dodgeMotionAt } from './motion.mjs';
+import { Combat, MODES, COOLDOWN, ITEM_USE_MS, TELEGRAPH_MS, WEAKEN_ATTACKS, WEAKEN_MULTIPLIER } from './combat.mjs';
+import { Expedition, NODE_TYPES, RELICS, TRAINING, ROUTES, XP_REWARDS, ACTIVE_ROUTE_COLUMNS } from './expedition.mjs';
+import { motionAt, specialIntensityAt, dodgeMotionAt, houndRigPoseAt, HOUND_RECOVERY_MS, bellRigPoseAt, BELL_RECOVERY_MS } from './motion.mjs';
 import { Fighters3D } from './fighters3d.mjs';
 import { CombatAudio } from './audio.mjs';
 
 const $ = id => document.getElementById(id);
 const canvas = $('scene');
 const ctx = canvas.getContext('2d');
-let game = new Combat();
+let game = new Combat({ species: 'hound' });
 let expedition = new Expedition();
 let expeditionBattle = false;
 let paused = false;
@@ -35,7 +35,8 @@ Promise.all(Object.values(characterArt).map(image => image.decode().catch(() => 
 try { best = JSON.parse(localStorage.getItem('afterimage-best-v1')); } catch { /* Local storage is optional. */ }
 
 const clock = () => paused ? pausedAt : performance.now() - origin;
-const running = () => game.state === 'player' || game.state === 'boss';
+const running = () => ['player', 'boss', 'counter'].includes(game.state);
+const isHound = () => game.species === 'hound';
 const timeString = ms => `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`;
 const activeModes = [...document.querySelectorAll('[data-mode]')];
 const parryButtons = { left: $('parry-left'), right: $('parry-right') };
@@ -85,6 +86,10 @@ function processEvents() {
     switch (event.type) {
       case 'start': feedback('YOUR TURN', '공격하거나 아이템을 선택하세요', '', 1500); break;
       case 'attack': feedbackUntil = 0; audio.play('attack', .55); burst('attack'); break;
+      case 'counter':
+        feedback('PERFECT COUNTER', `${event.strikes}타 모두 퍼펙트 · 반격 피해 ${event.damage}`, 'counter', 1200);
+        audio.play('attack', .72); burst('attack');
+        break;
       case 'heal': feedback(`HP +${event.amount}`, `회복약 사용 · 남은 수량 ${game.potions}개`, 'heal', ITEM_USE_MS); break;
       case 'dodge':
         feedback('회피', `${(game.dodgeDuration() / 1000).toFixed(2)}초 무적`, 'dodge', game.dodgeDuration());
@@ -103,6 +108,9 @@ function processEvents() {
       case 'early': feedback('TOO EARLY', '타격 순간까지 기다리세요', 'early', 500); break;
       case 'late': feedback('TOO LATE', '조금 더 일찍 탭해 보세요', 'hurt', 700); break;
       case 'wrong': feedback('방향 확인', '빛나는 팔과 무기 쪽을 막아보세요', 'early', 650); break;
+      case 'weaken':
+        feedback('쇠약', `체력 피해 없음 · 다음 공격 ${WEAKEN_ATTACKS}회 피해 −${(1 - WEAKEN_MULTIPLIER) * 100}%`, 'weaken', 1600);
+        break;
       case 'hurt':
         feedback(event.attackDamage > 1 ? 'CRITICAL HIT' : 'HIT', game.mode === 'practice' ? `연습 모드 · 실제 전투에서는 생명력 −${event.attackDamage}` : `타이밍을 놓쳤습니다 · 생명력 −${event.damage}`, 'hurt');
         audio.play('hurt', event.attackDamage > 1 ? .72 : .6, event.attackDamage > 1 ? .82 : 1); burst('hurt');
@@ -110,7 +118,7 @@ function processEvents() {
         if (navigator.vibrate) navigator.vibrate(40);
         break;
       case 'phase': phaseUntil = clock() + 1900; break;
-      case 'turn': feedback('YOUR TURN', '공격하거나 회복할 수 있습니다.', '', 1100); break;
+      case 'turn': if (!event.counter) feedback('YOUR TURN', '공격하거나 회복할 수 있습니다.', '', 1100); break;
       case 'won':
       case 'lost': finish(event.type === 'won'); break;
     }
@@ -123,8 +131,8 @@ function updateUI() {
   $('boss-fill').style.width = `${game.bossHp / game.bossMaxHp * 100}%`;
   document.querySelector('.boss-health-track').setAttribute('aria-valuenow', game.bossHp);
   document.querySelector('.boss-health-track').setAttribute('aria-valuemax', game.bossMaxHp);
-  $('enemy-name').textContent = { normal: '잊힌 수문장', elite: '붉은 집행자', boss: '공허의 파수꾼' }[game.enemy];
-  $('enemy-label').textContent = expeditionBattle ? `지점 ${expedition.node.floor} / ${NODE_TYPES[game.enemy].name}` : 'BOSS 01 / THE HOLLOW WARDEN';
+  $('enemy-name').textContent = { hound: '재의 사냥개', bell: '종을 짊어진 집행자', warden: '공허의 파수꾼' }[game.species];
+  $('enemy-label').textContent = expeditionBattle ? `지점 ${expedition.node.floor} / ${NODE_TYPES[game.enemy].name}` : { hound: 'ASH HOUND / COMBAT STUDY', bell: 'BELL EXECUTIONER / COMBAT STUDY', warden: 'BOSS 01 / THE HOLLOW WARDEN' }[game.species];
   const navigationLocked = running() || !$('death-screen').hidden;
   $('show-map').disabled = navigationLocked;
   $('show-solo').disabled = navigationLocked;
@@ -150,7 +158,7 @@ function updateUI() {
   const playerTurn = game.state === 'player';
   const bossTurn = game.state === 'boss';
   $('turn-tag').classList.toggle('boss', bossTurn);
-  $('turn-tag').innerHTML = `<i></i> ${paused ? '일시 정지' : playerTurn ? '당신의 차례' : bossTurn ? '보스의 차례' : game.state === 'won' ? '전투 승리' : game.state === 'lost' ? '전투 종료' : '전투 대기'}`;
+  $('turn-tag').innerHTML = `<i></i> ${paused ? '일시 정지' : playerTurn ? '당신의 차례' : bossTurn ? '보스의 차례' : game.state === 'counter' ? '퍼펙트 반격' : game.state === 'won' ? '전투 승리' : game.state === 'lost' ? '전투 종료' : '전투 대기'}`;
   $('attack').disabled = !playerTurn || paused;
   $('items').disabled = !playerTurn || paused;
   $('item-hint').textContent = `회복약 ×${game.potions}`;
@@ -163,12 +171,19 @@ function updateUI() {
   $('potion-reason').textContent = potionReason || `지금 사용하면 ${Math.min(game.maxHp, game.hp + game.healAmount)} / ${game.maxHp}로 회복합니다. 피격 기록은 유지됩니다.`;
   Object.values(parryButtons).forEach(button => { button.disabled = !bossTurn || paused; });
   $('dodge').disabled = !bossTurn || paused;
-  $('attack-hint').textContent = playerTurn ? `피해 ${game.attackDamage + (game.attacks === 0 ? game.profile.firstStrikeBonus || 0 : 0)}` : '내 차례';
+  $('attack-hint').textContent = playerTurn ? `피해 ${game.nextAttackDamage()}${game.weakenedAttacks ? ' · 쇠약' : ''}` : '내 차례';
+  $('attack').classList.toggle('weakened', game.weakenedAttacks > 0);
+  $('weaken-status').hidden = game.weakenedAttacks === 0;
+  $('weaken-status').textContent = game.weakenedAttacks ? `쇠약 · 피해 −${(1 - WEAKEN_MULTIPLIER) * 100}% · 공격·반격 ${game.weakenedAttacks}회 남음` : '';
   $('pause').disabled = !running();
   activeModes.forEach(button => { button.disabled = running() || !$('death-screen').hidden; });
   $('practice-attack-label').hidden = game.mode !== 'practice';
   $('practice-attack').disabled = running() || !$('death-screen').hidden;
+  $('enemy-design').disabled = navigationLocked;
   $('dodge-rule').textContent = `회피: 닿기 직전에 탭 · ${(game.dodgeDuration() / 1000).toFixed(2)}초 무적 · 방향 무관`;
+  const perfectHits = game.sequence.filter(hit => hit.result === 'perfect').length;
+  const counterFailed = game.sequence.some(hit => hit.result && hit.result !== 'perfect');
+  $('counter-rule').textContent = `한 턴 모두 PERFECT → 자동 반격 ${game.counterDamage()} 피해${bossTurn ? counterFailed ? ' · 이번 턴 조건 실패' : ` · ${perfectHits}/${game.sequence.length}` : ''}`;
   updateDefenseCooldown(clock());
 }
 
@@ -318,7 +333,7 @@ function renderBest() {
   $('best-record').textContent = best && Number.isFinite(best.hits) && Number.isFinite(best.time) ? `${best.hits === 0 ? 'NO-HIT' : `피격 ${best.hits}회`} · ${timeString(best.time)}` : '첫 승리를 기다리는 중';
 }
 
-const nodeX = node => 80 + node.column * 160;
+const nodeX = node => node.type === 'boss' ? 320 : 640 * (ACTIVE_ROUTE_COLUMNS.indexOf(node.column) + .5) / ACTIVE_ROUTE_COLUMNS.length;
 const nodeY = node => 76 + (10 - node.floor) * 110;
 
 function locateNode() {
@@ -361,14 +376,17 @@ function renderExpedition() {
     const status = capped ? '최대 강화' : ['won', 'lost'].includes(run.state) ? '원정 종료' : run.state !== 'map' ? '다음 길 선택 시 강화 가능' : run.xp < cost ? `${cost - run.xp} XP 부족` : '강화하기';
     return `<button class="training-option" data-training="${id}" ${run.canTrain(id) ? '' : 'disabled'}><span class="training-icon" aria-hidden="true">${option.icon}︎</span><span><b>${option.name} <small>${run.training[id]} / ${option.costs.length}</small></b><span>${capped ? '최대치에 도달했습니다' : effect}</span><small>${status}</small></span><strong>${capped ? 'MAX' : `${cost} XP`}</strong></button>`;
   }).join('');
-  $('route-cards').innerHTML = ROUTES.map((route, column) => {
+  const routes = ROUTES.map((route, column) => ({ ...route, column })).filter(route => ACTIVE_ROUTE_COLUMNS.includes(route.column));
+  for (const id of ['route-cards', 'map-route-headings']) $(id).classList.toggle('single-route', routes.length === 1);
+  $('route-cards').innerHTML = routes.map(route => {
+    const { column } = route;
     const nodes = run.nodes.filter(n => n.column === column || n.type === 'boss');
     const count = type => nodes.filter(n => n.type === type).length;
     const battles = nodes.filter(n => XP_REWARDS[n.type]).length;
     const xp = nodes.reduce((sum, n) => sum + (XP_REWARDS[n.type] || 0), 0);
     return `<article class="route-card route-${column}"><h3><span aria-hidden="true">0${column + 1}</span>${route.name}</h3><p>${route.description}</p><b>전투 ${battles} · 정예 ${count('elite')} 포함</b><span>휴식 ${count('rest')} · 보물 ${count('treasure')}</span><strong>${xp} XP · 희귀 보상 ${count('elite')}회</strong></article>`;
   }).join('');
-  $('map-route-headings').innerHTML = ROUTES.map((route, column) => `<span class="route-${column}">${route.name}</span>`).join('');
+  $('map-route-headings').innerHTML = routes.map(route => `<span class="route-${route.column}">${route.name}</span>`).join('');
   const edges = run.nodes.flatMap(node => node.next.map(id => {
     const next = run.nodes.find(n => n.id === id);
     const travelled = run.visited.includes(node.id) && (run.visited.includes(id) || id === run.current);
@@ -396,8 +414,8 @@ function renderExpedition() {
     const won = run.state === 'won';
     card.innerHTML = `<span class="overline">${won && run.stats.hits === 0 ? 'A FLAWLESS EXPEDITION' : won ? 'EXPEDITION COMPLETE' : 'THE JOURNEY ENDS'}</span><h2>${won ? '공허를 넘어서' : '다음 길은 다를 거예요'}</h2><p>${won ? run.stats.hits === 0 ? '전 원정 무피격 달성. 모든 순간을 막아냈습니다.' : '공허의 파수꾼을 쓰러뜨리고 원정을 완주했습니다.' : `${run.node.floor}번째 지점에서 쓰러졌습니다. 새 원정에서는 경험치와 강화가 초기화됩니다.`}</p><dl class="journey-results"><div><dt>완료한 지점</dt><dd>${run.visited.length} / 10</dd></div><div><dt>승리한 전투</dt><dd>${run.stats.battles}회</dd></div><div><dt>전투 시간</dt><dd>${timeString(run.stats.elapsed)}</dd></div><div><dt>피격 / 퍼펙트</dt><dd>${run.stats.hits} / ${run.stats.perfects}</dd></div><div><dt>회복약 사용</dt><dd>${run.stats.potionsUsed}회</dd></div><div><dt>획득 경험치 / 남은 경험치</dt><dd>${run.stats.xpEarned} / ${run.xp} XP</dd></div></dl><button class="new-expedition" data-new-run>새로운 원정 시작 <span>↗</span></button>`;
   } else {
-    const direction = !run.current ? '네 출발점 중 하나를 선택하세요. 위의 경로 안내에서 위험과 보상을 비교할 수 있습니다.' : available.length > 1 ? '갈림길입니다. 직진하거나 연결된 옆길로 이동하세요. 옮겨간 뒤에는 원래 길로 돌아올 수 없습니다.' : '외길 구간입니다. 빛나는 다음 지점으로만 이동할 수 있습니다.';
-    card.innerHTML = `<span class="overline">CHOOSE YOUR NEXT STEP</span><h2>${run.current ? ROUTES[run.node.column]?.name || '다음 길을 고르세요' : '네 개의 길, 하나의 선택'}</h2><p>${direction}</p><ol class="journey-rules"><li><b>전투</b><span>빛나는 팔과 무기를 읽고 방향에 맞춰 패링하세요.</span></li><li><b>휴식</b><span>회복, 무기 강화, 생명력 단련 중 하나를 선택하세요.</span></li><li><b>보물</b><span>유물과 회복약으로 마지막 전투를 준비하세요.</span></li></ol><div class="route-tip">${run.current ? '흐릿해진 지점은 선택한 경로에서 접근할 수 없습니다.' : '시련의 길은 휴식이 없는 대신, 정예 승리 보상 3회를 보장합니다.'}</div>`;
+    const direction = !run.current ? routes.length === 1 ? `${routes[0].name}에서 원정을 시작하세요. 빛나는 출발점을 눌러 이동합니다.` : '출발점 중 하나를 선택하세요. 위의 경로 안내에서 위험과 보상을 비교할 수 있습니다.' : available.length > 1 ? '갈림길입니다. 직진하거나 연결된 옆길로 이동하세요. 옮겨간 뒤에는 원래 길로 돌아올 수 없습니다.' : '외길 구간입니다. 빛나는 다음 지점으로만 이동할 수 있습니다.';
+    card.innerHTML = `<span class="overline">CHOOSE YOUR NEXT STEP</span><h2>${run.current ? ROUTES[run.node.column]?.name || '다음 길을 고르세요' : routes.length === 1 ? routes[0].name : '당신의 길을 선택하세요'}</h2><p>${direction}</p><ol class="journey-rules"><li><b>전투</b><span>빛나는 팔과 무기를 읽고 방향에 맞춰 패링하세요.</span></li><li><b>휴식</b><span>회복, 무기 강화, 생명력 단련 중 하나를 선택하세요.</span></li><li><b>보물</b><span>유물과 회복약으로 마지막 전투를 준비하세요.</span></li></ol><div class="route-tip">${run.current ? routes.length === 1 ? '길을 따라 마지막 지점의 보스에게 도전하세요.' : '흐릿해진 지점은 선택한 경로에서 접근할 수 없습니다.' : '시련의 길은 휴식이 없는 대신, 정예 승리 보상 3회를 보장합니다.'}</div>`;
   }
 }
 
@@ -441,7 +459,8 @@ $('show-map').addEventListener('click', showMap);
 $('show-solo').addEventListener('click', () => {
   if (running() || !$('death-screen').hidden) return;
   expeditionBattle = false;
-  game = new Combat();
+  game = new Combat({ species: $('enemy-design').value });
+  syncPracticeOptions();
   $('expedition-view').hidden = true; $('battle-view').hidden = false;
   $('show-map').setAttribute('aria-pressed', 'false'); $('show-solo').setAttribute('aria-pressed', 'true');
   activeModes.forEach(button => { const selected = button.dataset.mode === game.mode; button.classList.toggle('selected', selected); button.setAttribute('aria-pressed', String(selected)); });
@@ -483,10 +502,21 @@ $('sound').addEventListener('click', () => {
   if (sound) unlockAudio();
 });
 $('guide').addEventListener('change', event => { showGuide = event.target.checked; });
-ATTACK_COMPONENTS.forEach(component => $('practice-attack').add(new Option(`${component.name}${component.damage > 1 ? ` · 필살기 −${component.damage} HP` : ''}`, component.type)));
+function syncPracticeOptions() {
+  $('practice-attack').replaceChildren(new Option('전체 무작위 조합', 'random'));
+  game.components.forEach(component => $('practice-attack').add(new Option(`${component.name}${component.effect === 'weaken' ? ' · 공격 약화' : component.damage > 1 ? ` · 필살기 −${component.damage} HP` : ''}`, component.type)));
+  $('practice-attack').value = game.practiceAttack;
+}
+syncPracticeOptions();
 $('practice-attack').addEventListener('change', event => {
   if (running() || !$('death-screen').hidden) return;
-  game = new Combat({ mode: game.mode, practiceAttack: event.target.value });
+  game = new Combat({ mode: game.mode, species: $('enemy-design').value, practiceAttack: event.target.value });
+  updateUI();
+});
+$('enemy-design').addEventListener('change', () => {
+  if (running() || !$('death-screen').hidden) return;
+  game = new Combat({ mode: game.mode, species: $('enemy-design').value, practiceAttack: $('practice-attack').value });
+  syncPracticeOptions();
   updateUI();
 });
 for (const action of ['attack', 'dodge']) {
@@ -517,7 +547,7 @@ for (const [side, button] of Object.entries(parryButtons)) {
 }
 activeModes.forEach(button => button.addEventListener('click', () => {
   if (running() || !$('death-screen').hidden) return;
-  game = new Combat({ mode: button.dataset.mode, practiceAttack: $('practice-attack').value });
+  game = new Combat({ mode: button.dataset.mode, species: $('enemy-design').value, practiceAttack: $('practice-attack').value });
   activeModes.forEach(item => {
     const selected = item === button;
     item.classList.toggle('selected', selected);
@@ -582,7 +612,10 @@ function drawProjectile(hit, now, from, target, side, scale) {
   ctx.translate(x, y);
   const previous = point(Math.max(0, progress - .02));
   ctx.rotate(Math.atan2(y - previous[1], x - previous[0]));
-  if (hit.type === 'energy-orb') {
+  if (hit.type === 'bell-resonance' || hit.effect === 'weaken') {
+    if (hit.effect === 'weaken') ellipse(0, 0, radius * .6, radius * 2.2, '#bf9df2');
+    for (const size of [1, 1.45, 1.9]) ellipse(-radius * (size - 1), 0, radius * .36, radius * size, color);
+  } else if (hit.type === 'energy-orb') {
     ellipse(0, 0, radius, radius, `${color}65`, true);
     ellipse(0, 0, radius, radius, color);
     ellipse(0, 0, radius * .45, radius * .45, '#edfff5', true);
@@ -590,6 +623,29 @@ function drawProjectile(hit, now, from, target, side, scale) {
     for (const size of [1, 1.5]) {
       ctx.beginPath(); ctx.arc(-radius * .4, 0, radius * size, -1.2, 1.2);
       ctx.strokeStyle = color; ctx.lineWidth = size === 1 ? 4 : 2; ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+function drawGroundShockwave(hit, now, from, target, scale) {
+  const progress = Math.max(0, Math.min(1, (now - hit.launchAt) / (hit.at - hit.launchAt)));
+  const fade = now <= hit.at ? 1 : Math.max(0, 1 - (now - hit.at) / 240);
+  // The expanding ellipse reaches the player's feet exactly at the defense time.
+  const reach = Math.hypot(target[0] - from[0], (target[1] - from[1]) / .35);
+  ctx.save(); ctx.globalAlpha = fade;
+  const radius = Math.max(1, reach * progress);
+  ctx.beginPath(); ctx.ellipse(...from, radius, radius * .35, 0, 0, Math.PI * 2);
+  ctx.strokeStyle = '#f2ce88'; ctx.lineWidth = 3; ctx.stroke();
+  const age = Math.max(0, (now - hit.launchAt) / 400);
+  if (age < 1) {
+    ctx.globalAlpha = (1 - age) * fade;
+    ellipse(...from, (24 + age * 42) * scale, (7 + age * 10) * scale, '#e8c28b', true);
+    if (!reducedMotion) for (let i = 0; i < 8; i++) {
+      const angle = i * Math.PI / 4;
+      const x = from[0] + Math.cos(angle) * (20 + age * 58) * scale;
+      const y = from[1] + Math.sin(angle) * 12 * scale - Math.sin(age * Math.PI) * (12 + i % 3 * 6) * scale;
+      polygon([[x - 3, y + 2], [x, y - 4], [x + 4, y + 2]], '#b2a285');
     }
   }
   ctx.restore();
@@ -641,15 +697,16 @@ function drawScene(now) {
     ctx.restore();
   });
 
-  const special = game.sequence.find(h => h.damage > 1 && now >= h.windupAt && now < h.at + 420);
+  const special = game.sequence.find(h => (h.damage > 1 || h.effect === 'weaken') && now >= h.windupAt && now < h.at + 420);
   const specialIntensity = specialIntensityAt(special, now);
   const specialWarning = special && !special.resolved && !paused && game.state === 'boss';
   $('special-warning').hidden = !specialWarning;
+  $('special-warning').dataset.effect = specialWarning ? special.effect || '' : '';
   $('arena').dataset.special = specialWarning ? String(special.damage) : '';
   if (specialWarning) {
     if ($('special-name').textContent !== special.name) $('special-name').textContent = special.name;
     const damage = Math.max(1, special.damage - (game.profile.specialReduction || 0));
-    const risk = `필살기 · 생명력 −${damage}${damage < special.damage ? ' · 호부 적용' : ''}`;
+    const risk = special.effect === 'weaken' ? `공격 약화 · 양손 패링 또는 회피` : `필살기 · 생명력 −${damage}${damage < special.damage ? ' · 호부 적용' : ''}`;
     if ($('special-risk').textContent !== risk) $('special-risk').textContent = risk;
   }
   if (specialIntensity > 0) {
@@ -661,6 +718,7 @@ function drawScene(now) {
     ctx.fillStyle = rim; ctx.fillRect(0, 0, width, height);
   }
   const hit = game.state === 'boss' ? game.nextHit() : null;
+  const hound = isHound(), bell = game.species === 'bell';
   const delta = hit ? hit.at - now : Infinity;
   const windup = hit && now >= hit.windupAt;
   const warning = delta < TELEGRAPH_MS && delta > -MODES[game.mode].window;
@@ -682,14 +740,16 @@ function drawScene(now) {
     }
     if (motionHit.launchAt != null) anticipation = Math.min(1, (now - motionHit.windupAt) / (motionHit.launchAt - motionHit.windupAt));
   }
-  const lastImpact = game.state === 'boss' ? game.sequence.find(h => now >= h.at && now - h.at < 240) : null;
-  const strikeProgress = lastImpact ? (now - lastImpact.at) / 240 : 0;
+  const recoveryMs = hound ? HOUND_RECOVERY_MS : bell ? BELL_RECOVERY_MS : 240;
+  const lastImpact = game.state === 'boss' ? game.sequence.find(h => now >= h.at && now - h.at < recoveryMs) : null;
+  const strikeProgress = lastImpact ? (now - lastImpact.at) / recoveryMs : 0;
   const poseHit = lastImpact || motionHit;
+  const enemyPose = hound ? houndRigPoseAt(poseHit, now, reducedMotion, game.attackAt) : bell ? bellRigPoseAt(poseHit, now, reducedMotion, game.attackAt) : null;
   const pose = poseHit?.type;
   const ranged = poseHit?.launchAt != null;
   const travel = lastImpact ? 1 - strikeProgress : motionHit ? Math.max(0, (now - motionHit.commitAt) / (motionHit.at - motionHit.commitAt)) : 0;
   let shiftX = 0, shiftY = 0, lean = 0;
-  if (pose === 'leap') {
+  if (!hound && pose === 'leap') {
     shiftX = -50 * travel;
     shiftY = 28 * travel - (lastImpact ? 0 : 40 * Math.sin(travel * Math.PI));
   } else if (pose === 'rush') {
@@ -705,21 +765,21 @@ function drawScene(now) {
     shiftY = 8 * Math.sin(travel * Math.PI * 2);
   }
   // Movement is composed independently of the weapon, on the same paused clock.
-  const movement = motionAt(poseHit, now, reducedMotion);
+  const movement = enemyPose?.travel || motionAt(poseHit, now, reducedMotion);
   shiftX += movement.x; shiftY += movement.y;
   if (reducedMotion) { shiftX = 0; shiftY = 0; lean = 0; }
-  const bossArtReady = characterArt.boss.complete && characterArt.boss.naturalWidth > 0;
+  const bossArtReady = !hound && !bell && characterArt.boss.complete && characterArt.boss.naturalWidth > 0;
   // Reserve space for a raised blade as well as the resting silhouette.
-  const bossTop = fighters?.available ? 265 : 150, bossBottom = 160;
+  const bossTop = fighters?.available ? hound ? 220 : bell ? 235 : 265 : 150, bossBottom = 160;
   const framingTop = hudBottom + 48 * specialIntensity;
-  const bossScale = Math.min(scale * movement.depth, (height - 88 - framingTop) / (bossTop + bossBottom)) * (game.enemy === 'normal' ? .85 : game.enemy === 'elite' ? .94 : 1);
-  const edge = Math.min(width / 2, (bossArtReady ? 235 : 230) * bossScale + 12);
+  const bossScale = Math.min(scale * movement.depth, (height - 88 - framingTop) / (bossTop + bossBottom)) * (hound ? 1.06 : game.enemy === 'normal' ? .85 : game.enemy === 'elite' ? .94 : 1);
+  const edge = Math.min(width / 2, (hound ? 140 : bell ? 180 : bossArtReady ? 235 : 230) * bossScale + 12);
   const bossX = Math.max(edge, Math.min(width - edge, width * .56 + shiftX * scale));
   const minBossY = framingTop + bossTop * bossScale + 8;
   const maxBossY = height - 80 - bossBottom * bossScale;
   const bossY = Math.max(minBossY, Math.min(maxBossY, height * .49 + shiftY * scale));
   const floatY = 0;
-  const groundY = bossArtReady
+  const groundY = hound || bell ? bossY + (bossBottom - 5) * bossScale : bossArtReady || fighters?.available
     ? Math.max(minBossY, Math.min(maxBossY, height * .49)) + (bossBottom - 5) * bossScale + (movement.depth - 1) * 50 * scale
     : height * .7 + (movement.depth - 1) * 50 * scale;
   if (specialIntensity > 0) {
@@ -731,7 +791,7 @@ function drawScene(now) {
     ellipse(bossX, groundY, 105 * bossScale, 21 * bossScale, '#ad526760');
     ctx.restore();
   }
-  ellipse(bossX, groundY, (pose === 'leap' ? 52 : 70) * bossScale, 12 * bossScale, '#00000035', true);
+  ellipse(bossX, groundY, (hound ? 70 * (1 - enemyPose.lift * .2) : bell ? 90 : pose === 'leap' ? 52 : 70) * bossScale, 12 * bossScale, '#00000035', true);
   // A shrinking shadow and a detached body make altitude distinct from depth.
   if (movement.y < -12 && !reducedMotion) {
     line([[bossX, bossY + (bossBottom - 2) * bossScale], [bossX, groundY - 8 * bossScale]], '#c4bd8330');
@@ -781,18 +841,33 @@ function drawScene(now) {
     anchors = fighters.draw(ctx, { width, height, bossX, bossY: bossY + floatY, bossScale, bossLean: lean,
       playerX, playerY, scale, hit: poseHit, glowHit, parryWindow, now,
       attackAt: game.attackAt, parryAt: parrying ? flashAt : -Infinity,
-      hurtAt: flashKind === 'hurt' ? flashAt : -Infinity, healAt: game.healAt, dodgeAt: game.dodgeAt, reduced: reducedMotion, enemy: game.enemy });
+      hurtAt: flashKind === 'hurt' ? flashAt : -Infinity, healAt: game.healAt, dodgeAt: game.dodgeAt, reduced: reducedMotion, enemy: game.enemy, species: game.species, enemyPose });
   } else {
     // Compatibility fallback only. No cutout animation is used by the 3D renderer.
     ctx.save(); ctx.translate(bossX, bossY); ctx.scale(-bossScale, bossScale);
-    if (bossArtReady) ctx.drawImage(characterArt.boss, -108, -138, 204, 306);
+    if (hound) {
+      polygon([[-44, 145], [-42, 65], [-65, -20], [-23, -78], [24, -75], [54, 25], [35, 143], [14, 143], [10, 58], [-10, 63], [-20, 145]], '#484541', '#817052');
+      polygon([[-26, -65], [-24, -125], [-8, -98], [18, -129], [29, -87], [61, -58], [26, -47]], '#cec3a6', '#817052');
+      for (const side of [-1, 1]) {
+        line([[side * 38, -22], [side * 63, 20], [side * 67, 61]], '#675a42', 15);
+        for (let i = 0; i < 3; i++) line([[side * (61 + i * 6), 60], [side * (64 + i * 7), 95]], '#d1c7b2', 3);
+      }
+    } else if (bell) {
+      polygon([[-32, -135], [32, -135], [58, -45], [94, -8], [-94, -8], [-58, -45]], '#796a47', '#bea065', 3);
+      polygon([[-24, -55], [24, -55], [20, 10], [-20, 10]], '#252d2a', '#a68f5c');
+      for (const side of [-1, 1]) {
+        line([[side * 66, -10], [side * 78, 38], [side * 81, 80]], '#86704b', 28);
+        line([[side * 28, 10], [side * 33, 145]], '#38473f', 27);
+        ellipse(side * 81, 86, 23, 21, '#303731', true);
+      }
+    } else if (bossArtReady) ctx.drawImage(characterArt.boss, -108, -138, 204, 306);
     else polygon([[-48, 155], [-45, -85], [0, -135], [45, -85], [48, 155]], '#65755b', '#cbbb86');
     ctx.restore();
     ctx.save(); ctx.translate(playerX, playerY); ctx.scale(scale, scale);
     if (characterArt.player.naturalWidth) ctx.drawImage(characterArt.player, -70, -118, 110, 165);
     else polygon([[-15, 39], [-20, -80], [0, -110], [20, -80], [15, 39]], '#cfc6a9');
     ctx.restore();
-    anchors = { hands: { left: [bossX - 62 * bossScale, bossY], right: [bossX + 62 * bossScale, bossY] }, core: [bossX, bossY - 58 * bossScale], playerGuard: [playerX, playerGuardY] };
+    anchors = { hands: { left: [bossX - 62 * bossScale, bossY], right: [bossX + 62 * bossScale, bossY] }, core: [bossX, bossY - 58 * bossScale], playerGuard: [playerX, playerGuardY], groundStrike: [bossX, groundY] };
     if (glowHit) for (const side of ['left', 'right']) {
       if (glowHit.guard !== 'both' && glowHit.guard !== side) continue;
       const direction = side === 'left' ? -1 : 1, [x, y] = anchors.hands[side];
@@ -800,6 +875,11 @@ function drawScene(now) {
     }
   }
   const bossHands = Object.fromEntries(Object.entries(anchors.hands).map(([side, point]) => [side, [point[0] / width, point[1] / height]]));
+  if (game.weakenedAttacks > 0) {
+    const [x, y] = anchors.playerGuard;
+    ellipse(x, y, 24 * scale, 10 * scale, '#c4a1ed');
+    if (!reducedMotion) ellipse(x, y, (26 + Math.sin(t * 2) * 4) * scale, 13 * scale, '#a581d170');
+  }
   if (ranged && motionHit && now < motionHit.launchAt) {
     for (const side of ['left', 'right']) {
       if (motionHit.guard !== side && motionHit.guard !== 'both') continue;
@@ -833,25 +913,51 @@ function drawScene(now) {
   if (ranged && now >= poseHit.launchAt && !['parry', 'perfect'].includes(poseHit.result)) {
     // Keep the release position fixed while the arm recoils. Normalized points
     // also survive a viewport resize without pulling a projectile off screen.
-    if (bossArtReady && !projectileOrigins.has(poseHit)) projectileOrigins.set(poseHit, bossHands);
-    for (const side of [-1, 1]) {
-      if (poseHit.guard === 'both' || poseHit.hand === (side < 0 ? 'left' : 'right')) {
-        const source = projectileOrigins.get(poseHit)?.[side < 0 ? 'left' : 'right'];
-        drawProjectile(poseHit, now, source ? [source[0] * width, source[1] * height] : [bossX + side * 100 * bossScale, bossY + 12 * bossScale], [playerX + (side * 22 + dodge * 46) * scale, playerGuardY - dodge * 12 * scale], side, scale);
+    if (poseHit.type === 'bell-groundbreak') {
+      if (!projectileOrigins.has(poseHit)) projectileOrigins.set(poseHit, { ground: [anchors.groundStrike[0] / width, anchors.groundStrike[1] / height] });
+      const source = projectileOrigins.get(poseHit).ground;
+      drawGroundShockwave(poseHit, now, [source[0] * width, source[1] * height], [width * .3, height * .76 + 39 * scale], scale);
+    } else {
+      if (!projectileOrigins.has(poseHit)) projectileOrigins.set(poseHit, bossHands);
+      for (const side of [-1, 1]) {
+        if (poseHit.guard === 'both' || poseHit.hand === (side < 0 ? 'left' : 'right')) {
+          const source = projectileOrigins.get(poseHit)?.[side < 0 ? 'left' : 'right'];
+          drawProjectile(poseHit, now, source ? [source[0] * width, source[1] * height] : [bossX + side * 100 * bossScale, bossY + 12 * bossScale], [playerX + (side * 22 + dodge * 46) * scale, playerGuardY - dodge * 12 * scale], side, scale);
+        }
       }
     }
   }
   if (showGuide && warning && hit?.launchAt != null) {
-    ctx.save(); ctx.translate(playerX, playerGuardY); ctx.scale(scale, scale);
+    ctx.save(); ctx.translate(playerX, hit.type === 'bell-groundbreak' ? playerGroundY : playerGuardY); ctx.scale(scale, scale);
     timingRing(delta, parryWindow);
     ctx.restore();
   }
 
   if (lastImpact && lastImpact.launchAt == null && !reducedMotion) {
-    const fade = 1 - (now - lastImpact.at) / 240;
+    const fade = 1 - strikeProgress;
     const side = lastImpact.hand === 'right' ? 1 : -1;
     ctx.globalAlpha = fade * .7;
-    if (['sweep', 'spin', 'low-sweep', 'flurry'].includes(lastImpact.type)) {
+    if (bell) {
+      for (const hand of ['left', 'right']) {
+        if (lastImpact.guard !== 'both' && lastImpact.hand !== hand) continue;
+        const [x, y] = anchors.hands[hand];
+        line([[x, y - 20 * scale], [x, y + 18 * scale]], '#dfc18c', 7 * scale);
+      }
+      for (const ring of [0, 1]) ellipse(bossX, groundY, (35 + strikeProgress * 100 + ring * 20) * bossScale,
+        (7 + strikeProgress * 22 + ring * 4) * bossScale, '#d5b679');
+    } else if (hound) {
+      for (const hand of ['left', 'right']) {
+        if (lastImpact.guard !== 'both' && lastImpact.hand !== hand) continue;
+        const [x, y] = anchors.hands[hand], direction = hand === 'left' ? -1 : 1;
+        for (let claw = -1; claw <= 1; claw++) {
+          const offset = claw * 9 * scale;
+          ctx.beginPath(); ctx.moveTo(x + offset, y);
+          ctx.quadraticCurveTo(x + direction * 35 * scale, y + 35 * scale + offset, playerX + offset, playerGuardY + 20 * scale + offset);
+          ctx.strokeStyle = '#dcc9a1'; ctx.lineWidth = 1.8; ctx.stroke();
+        }
+      }
+      if (['hound-pounce', 'hound-rebound', 'hound-maul'].includes(lastImpact.type)) ellipse(bossX, groundY, (28 + strikeProgress * 45) * bossScale, (6 + strikeProgress * 9) * bossScale, '#b7a68070');
+    } else if (['sweep', 'spin', 'low-sweep', 'flurry'].includes(lastImpact.type)) {
       ctx.beginPath(); ctx.moveTo(bossX + side * 105 * bossScale, bossY + 20 * bossScale);
       ctx.quadraticCurveTo(bossX - side * 100 * bossScale, playerY - (lastImpact.type === 'low-sweep' ? -10 : 55) * scale, playerX, playerY);
       ctx.strokeStyle = '#ead3a3'; ctx.lineWidth = 3; ctx.stroke();
@@ -886,11 +992,13 @@ function drawScene(now) {
   }
   if (game.state === 'boss' && !paused) {
     const remaining = game.sequence.filter(h => !h.resolved).length;
-    const rangedCaption = hit?.launchAt != null && windup ? now < hit.launchAt ? `${hit.name} 충전 · 도착에 맞춰 방어` : `${hit.name} 접근 · 패링 또는 회피` : '';
+    const rangedCaption = hit?.launchAt != null && windup ? hit.type === 'bell-groundbreak'
+      ? now < hit.launchAt ? '종을 들어올립니다 · 지면 충격파 주의' : '지면 충격파 접근 · 도착 순간 방어'
+      : now < hit.launchAt ? `${hit.name} 충전 · 도착에 맞춰 방어` : `${hit.name} 접근 · 패링 또는 회피` : '';
     $('timing-caption').textContent = healProgress >= 0 && healProgress < 1 ? '회복 중 · 곧 보스가 반격합니다' : parryWindow ? '패링! 회피는 닿기 직전에' : rangedCaption || (warning ? `${hit.name} · 빛나는 무기를 보세요` : windup && remaining ? '빛나는 팔과 무기를 읽고 기다리세요' : remaining ? '보스가 공격을 준비합니다' : '공격을 피했다면, 다음 빈틈을 노리세요');
     $('timing-caption').style.color = parryWindow ? '#f6dfa1' : hit?.launchAt != null ? '#a5dfff' : hit?.type === 'fury' ? '#edb098' : '#b3c0a7';
   } else {
-    $('timing-caption').textContent = game.state === 'player' ? '공격하거나 아이템을 선택하세요.' : '';
+    $('timing-caption').textContent = game.state === 'player' ? '공격하거나 아이템을 선택하세요.' : game.state === 'counter' ? '자동 반격 중 · 곧 당신의 차례입니다' : '';
     $('timing-caption').style.color = '#b3c0a7';
   }
 }
@@ -914,11 +1022,17 @@ function frame(realTime) {
         const swingAt = release - Math.min(160, (release - strike.commitAt) * .3);
         if (now >= swingAt && !swingSeen.has(strike)) {
           swingSeen.add(strike);
-          if (now < release && !strike.resolved) audio.play('swing', strike.damage > 1 ? .4 : strike.guard === 'both' ? .28 : .22, strike.damage > 1 ? .72 : strike.guard === 'both' ? .88 : 1);
+          if (now < release && !strike.resolved) audio.play('swing', strike.damage > 1 ? .4 : strike.guard === 'both' ? .28 : .22, game.species === 'bell' ? .65 : strike.damage > 1 ? .72 : strike.guard === 'both' ? .88 : 1);
         }
         if (strike.launchAt != null && now >= strike.launchAt && !launchSeen.has(strike)) {
           launchSeen.add(strike);
-          if (now < strike.at && !strike.resolved) audio.play('wave', .36, strike.guard === 'both' ? .85 : 1);
+          if (now < strike.at && !strike.resolved) {
+            audio.play('wave', .36, strike.guard === 'both' ? .85 : 1);
+            if (strike.effect === 'weaken') audio.play('perfect', .4, .5);
+            if (strike.type === 'bell-groundbreak') {
+              audio.play('hurt', .5, .65); audio.play('perfect', .45, .45);
+            }
+          }
         }
       }
     }

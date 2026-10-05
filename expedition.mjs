@@ -11,6 +11,8 @@ export const ROUTES = [
   { name: '안식의 길', description: '정예 없이 두 번의 회복·강화' },
   { name: '탐색의 길', description: '전투를 줄이고 보물 두 번 확보' },
 ];
+// Keep the other routes available for reopening later.
+export const ACTIVE_ROUTE_COLUMNS = [0];
 
 export const NODE_TYPES = {
   normal: { name: '일반 전투', icon: '⚔', description: '짧은 교전. 체력과 회복약을 아끼세요.' },
@@ -20,13 +22,13 @@ export const NODE_TYPES = {
   boss: { name: '최종 보스', icon: '♛', description: '공허의 파수꾼. 마지막 전투에서 원정을 완성하세요.' },
 };
 export const RELICS = {
-  vanguard: { name: '선봉의 문장', icon: '⚔', describe: rare => `매 전투 첫 공격 피해 +${rare ? 18 : 12}` },
+  vanguard: { name: '선봉의 문장', icon: '⚔', describe: rare => `매 전투 첫 공격 피해 +${rare ? 2 : 1}` },
   apothecary: { name: '약사의 유리병', icon: '♧', describe: rare => `회복약 회복량 +${rare ? 2 : 1}칸` },
   ward: { name: '붉은 호부', icon: '◈', describe: rare => `필살기 피해 −${rare ? 2 : 1}칸 · 최소 피해 1칸` },
   potion: { name: '비상 회복약', icon: '✚', describe: rare => `회복약 ${rare ? 2 : 1}개 획득` },
 };
 
-export function makeMap(random = Math.random) {
+export function makeMap(random = Math.random, columns = ACTIVE_ROUTE_COLUMNS) {
   const nodes = [];
   const pick = values => values[Math.floor(random() * values.length)];
   const early = pick([3, 4]), late = pick([7, 8]);
@@ -50,13 +52,16 @@ export function makeMap(random = Math.random) {
     const from = pick(pair), to = pair.find(column => column !== from);
     nodes.find(n => n.id === `5-${from}`).next.push(`6-${to}`);
   }
-  return nodes;
+  const visible = nodes.filter(node => node.type === 'boss' || columns.includes(node.column));
+  const ids = new Set(visible.map(node => node.id));
+  for (const node of visible) node.next = node.next.filter(id => ids.has(id));
+  return visible;
 }
 
 export class Expedition {
-  constructor(random = Math.random) {
+  constructor(random = Math.random, columns = ACTIVE_ROUTE_COLUMNS) {
     this.random = random;
-    this.nodes = makeMap(random);
+    this.nodes = makeMap(random, columns);
     this.state = 'map'; this.current = null; this.visited = [];
     this.hp = 5; this.maxHp = 5; this.potions = 2; this.weapon = 0;
     this.xp = 0; this.lastXpGain = 0;
@@ -69,7 +74,7 @@ export class Expedition {
   get profile() {
     const rank = id => { const item = this.relics.find(r => r.id === id); return item ? item.rare ? 2 : 1 : 0; };
     return { hp: this.hp, maxHp: this.maxHp, potions: this.potions, attackDamage: BASE_ATTACK_DAMAGE + this.weapon + this.training.power,
-      firstStrikeBonus: rank('vanguard') ? rank('vanguard') === 2 ? 18 : 12 : 0,
+      firstStrikeBonus: rank('vanguard'),
       healAmount: 2 + rank('apothecary'), specialReduction: rank('ward') };
   }
   available() {

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Expedition, makeMap, XP_REWARDS } from './expedition.mjs';
-import { Combat, ATTACK_COMPONENTS } from './combat.mjs';
+import { Combat, ATTACK_COMPONENTS, COUNTER_MS } from './combat.mjs';
 
 const seeded = seed => () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
 const battleTypes = ['normal', 'elite', 'boss'];
@@ -41,8 +41,10 @@ function blockTurn(fight) {
       fight.release(hit.at, 'left'); fight.release(hit.at, 'right');
     } else { fight.tap(hit.at, hit.guard); fight.release(hit.at, hit.guard); }
   }
+  assert.equal(fight.bossHp, hp, 'individual parries do not deal immediate damage');
   fight.update(fight.endAt);
-  assert.equal(fight.bossHp, hp, 'parrying must never damage enemies');
+  assert.equal(fight.bossHp, Math.max(0, hp - fight.counterDamage()), 'a complete perfect turn earns one counter');
+  if (fight.state === 'counter') fight.update(fight.time + COUNTER_MS);
 }
 
 function win(fight) {
@@ -119,7 +121,7 @@ test('experience purchases spend the shown costs, persist in the next battle, re
 test('1,000 maps have four distinct routes, sparse non-crossing forks and about 80% combat', () => {
   const variants = new Set(), forks = new Set();
   for (let seed = 0; seed < 1000; seed++) {
-    const nodes = makeMap(seeded(seed * 104729));
+    const nodes = makeMap(seeded(seed * 104729), [0, 1, 2, 3]);
     assert.equal(nodes.length, 37);
     assert.equal(nodes.filter(n => battleTypes.includes(n.type)).length, 29);
     assert.equal(nodes.filter(n => n.type === 'rest').length, 4);
@@ -189,7 +191,7 @@ test('choosing a start locks other regions, and taking a fork permanently leaves
     if (run.state === 'reward') assert.ok(run.claim(run.offers[0].id));
   };
   for (const roll of [0, .99]) for (let column = 0; column < 4; column++) {
-    const run = new Expedition(() => roll);
+    const run = new Expedition(() => roll, [0, 1, 2, 3]);
     assert.deepEqual(run.available(), ['1-0', '1-1', '1-2', '1-3']);
     assert.equal(run.futureNodes().size, 37);
     for (let floor = 1; floor <= 5; floor++) {
@@ -224,10 +226,14 @@ test('200 complete expeditions remain no-hit clearable, preserve upgrades and ca
   let eliteCount = 0;
   for (let seed = 1; seed <= 200; seed++) {
     const random = seeded(seed), run = new Expedition(random);
+    assert.deepEqual(run.available(), ['1-0']);
+    assert.equal(run.nodes.length, 10);
+    assert.ok(run.nodes.every(n => n.type === 'boss' || n.column === 0));
     assert.equal(run.enter('10-1'), false);
     while (run.state !== 'won') {
       const available = run.available();
-      assert.ok(available.length);
+      assert.equal(available.length, 1);
+      if ((run.node?.floor || 0) < 9) for (const column of [1, 2, 3]) assert.equal(run.enter(`${(run.node?.floor || 0) + 1}-${column}`), false);
       const id = available[Math.floor(random() * available.length)];
       assert.ok(run.enter(id));
       assert.equal(run.enter(id), false, 'cannot enter twice or bypass an unresolved encounter');
@@ -235,6 +241,7 @@ test('200 complete expeditions remain no-hit clearable, preserve upgrades and ca
         const previousXP = run.xp;
         const profile = { ...run.profile };
         const fight = run.battle; fight.start();
+        assert.equal(fight.species, { normal: 'hound', elite: 'bell', boss: 'warden' }[run.node.type]);
         assert.equal(fight.hp, profile.hp); assert.equal(fight.maxHp, profile.maxHp); assert.equal(fight.potions, profile.potions);
         assert.equal(fight.bossMaxHp, run.node.hp);
         win(fight);
@@ -266,7 +273,7 @@ test('200 complete expeditions remain no-hit clearable, preserve upgrades and ca
 });
 
 test('rest choices cap healing, weapon and vitality; treasure never duplicates a passive or rerolls on inspection', () => {
-  const run = new Expedition(seeded(8));
+  const run = new Expedition(seeded(8), [0, 1, 2, 3]);
   run.current = run.nodes.find(n => n.type === 'rest').id;
   run.state = 'rest';
   assert.equal(run.rest('heal'), false); assert.equal(run.state, 'rest');
@@ -297,10 +304,13 @@ test('rest choices cap healing, weapon and vitality; treasure never duplicates a
 test('relic effects apply to real combat, including healing before a first strike and minimum special damage', () => {
   for (const rare of [false, true]) {
     const run = new Expedition(() => 0);
+    const bonus = rare ? 2 : 1;
     run.relics = ['vanguard', 'apothecary', 'ward'].map(id => ({ id, rare }));
     run.hp = 1; run.maxHp = 7; run.weapon = 2;
     const durable = new Combat({ bossHp: 100, profile: run.profile, random: () => 0 });
-    durable.start(); durable.attack(1); blockTurn(durable);
+    durable.start(); durable.attack(1);
+    assert.equal(durable.bossHp, 100 - 3 - bonus, 'first attack adds the rebalanced normal/rare bonus');
+    blockTurn(durable);
     const remaining = durable.bossHp; durable.attack(durable.time + 1);
     assert.equal(durable.bossHp, remaining - 3, 'first-strike bonus is not repeated within the fight');
     assert.ok(run.enter('1-0'));
@@ -308,12 +318,14 @@ test('relic effects apply to real combat, including healing before a first strik
     assert.equal(fight.heal(1), true); assert.equal(fight.hp, rare ? 5 : 4);
     assert.equal(fight.potions, 1); blockTurn(fight);
     assert.ok(fight.attack(fight.time + 1));
-    assert.equal(fight.bossHp, 0, 'upgraded attacks clamp the new lower enemy HP at zero');
+    assert.equal(fight.bossHp, Math.max(0, 7 - 2 - 3 - bonus), 'healing and its counter preserve the first direct attack bonus');
+    if (fight.state === 'boss') blockTurn(fight);
+    win(fight);
     assert.equal(fight.state, 'won'); run.settleBattle();
     assert.equal(run.hp, rare ? 5 : 4); assert.equal(run.potions, 1); assert.equal(run.stats.potionsUsed, 1);
     assert.ok(run.enter(run.available()[0]));
     run.battle.start(); assert.equal(run.battle.hp, run.hp); assert.equal(run.battle.potions, 1);
-    run.battle.attack(1); assert.equal(run.battle.bossHp, Math.max(0, run.node.hp - 3 - (rare ? 18 : 12)), 'first strike renews once per fight');
+    run.battle.attack(1); assert.equal(run.battle.bossHp, Math.max(0, run.node.hp - 3 - bonus), 'first strike renews once per fight');
     for (const type of ['judgment', 'execution']) {
       const index = ATTACK_COMPONENTS.findIndex(c => c.type === type);
       const rolls = [0, (index + .5) / ATTACK_COMPONENTS.length];

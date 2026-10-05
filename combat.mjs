@@ -15,8 +15,11 @@ export const MAX_HP = 5;
 export const HEAL_AMOUNT = 2;
 export const POTIONS = 2;
 export const ITEM_USE_MS = 850;
+export const COUNTER_MS = 520;
 export const TELEGRAPH_MS = 620;
 export const MAX_STRIKES = 6;
+export const WEAKEN_ATTACKS = 2;
+export const WEAKEN_MULTIPLIER = .5;
 export const ATTACK_COMPONENTS = [
   { type: 'cleave', name: '내려베기', windup: [760, 1100] },
   { type: 'sweep', name: '횡베기', windup: [700, 1000] },
@@ -38,12 +41,38 @@ export const ATTACK_COMPONENTS = [
   { type: 'execution', name: '종언의 쌍검', damage: 3, windup: [1250, 1600], tempo: 'hold', delay: [850, 1300], guard: 'both' },
 ];
 
+export const HOUND_ATTACK_COMPONENTS = [
+  { type: 'hound-rake', name: '앞발 후려치기', windup: [760, 1050] },
+  { type: 'hound-rush', name: '낮은 쇄도', windup: [700, 950], tempo: 'quick' },
+  { type: 'hound-pounce', name: '사냥 도약', windup: [1050, 1400], tempo: 'quick' },
+  { type: 'hound-rebound', name: '후퇴 후 덮치기', windup: [1000, 1300], tempo: 'hold', delay: [400, 700] },
+  { type: 'hound-flurry', name: '엇박 발톱 연타', windup: [680, 920], tempo: 'quick', hits: [2, 3] },
+  { type: 'hound-scoop', name: '지면 할퀴기', windup: [900, 1200], tempo: 'hold', delay: [550, 900] },
+  { type: 'hound-feint', name: '어깨 속임수', windup: [760, 1000], tempo: 'feint', delay: [650, 1100] },
+  { type: 'hound-maul', name: '쌍발 내려찍기', windup: [1000, 1400], tempo: 'hold', delay: [700, 1100], guard: 'both' },
+];
+
+export const BELL_ATTACK_COMPONENTS = [
+  { type: 'bell-hammer', name: '묵직한 철추', windup: [1050, 1400], tempo: 'hold', delay: [650, 1100] },
+  { type: 'bell-pendulum', name: '추의 횡진', windup: [950, 1250] },
+  { type: 'bell-auger', name: '비틀어 올리기', windup: [1000, 1350], tempo: 'hold', delay: [500, 850] },
+  { type: 'bell-march', name: '철각 전진', windup: [1100, 1450], tempo: 'quick' },
+  { type: 'bell-triplet', name: '엇박 종추 연타', windup: [850, 1250], tempo: 'hold', delay: [200, 750], hits: [2, 3] },
+  { type: 'bell-resonance', name: '공명 충격파', windup: [1000, 1300], tempo: 'hold', delay: [550, 900], flight: [900, 1200], guard: 'both' },
+  { type: 'bell-groundbreak', name: '종의 대지 강타', damage: 2, windup: [1400, 1800], tempo: 'hold', delay: [800, 1200], flight: [850, 1100], guard: 'both' },
+  { type: 'bell-lament', name: '쇠약의 종울림', damage: 0, effect: 'weaken', windup: [1200, 1550], tempo: 'hold', delay: [750, 1100], flight: [1000, 1300], guard: 'both' },
+  { type: 'bell-fault', name: '균열 내려찍기', damage: 2, windup: [1200, 1500], tempo: 'hold', delay: [800, 1250] },
+  { type: 'bell-toll', name: '종언의 타종', damage: 3, windup: [1300, 1600], tempo: 'hold', delay: [900, 1400], guard: 'both' },
+];
+
 // One clock, supplied by the caller: pausing and dropped frames cannot change a hit's timing.
 export class Combat {
-  constructor({ random = Math.random, mode = 'challenge', practiceAttack = 'random', enemy = 'boss', bossHp = ENEMY_HP[enemy] ?? BOSS_HP, profile = {} } = {}) {
+  constructor({ random = Math.random, mode = 'challenge', practiceAttack = 'random', enemy = 'boss', species = enemy === 'normal' ? 'hound' : enemy === 'elite' ? 'bell' : 'warden', bossHp = ENEMY_HP[enemy] ?? BOSS_HP, profile = {} } = {}) {
     this.random = random;
     this.mode = MODES[mode] ? mode : 'challenge';
-    this.practiceAttack = ATTACK_COMPONENTS.some(c => c.type === practiceAttack) ? practiceAttack : 'random';
+    this.species = ['hound', 'bell'].includes(species) ? species : 'warden';
+    this.components = this.species === 'hound' ? HOUND_ATTACK_COMPONENTS : this.species === 'bell' ? BELL_ATTACK_COMPONENTS : ATTACK_COMPONENTS;
+    this.practiceAttack = this.components.some(c => c.type === practiceAttack) ? practiceAttack : 'random';
     this.enemy = enemy;
     this.bossMaxHp = bossHp;
     this.profile = { ...profile };
@@ -56,6 +85,7 @@ export class Combat {
     this.hp = this.profile.hp ?? this.maxHp;
     this.potions = this.profile.potions ?? POTIONS;
     this.attackDamage = this.profile.attackDamage ?? BASE_ATTACK_DAMAGE;
+    this.weakenedAttacks = 0;
     this.healAmount = this.profile.healAmount ?? HEAL_AMOUNT;
     this.attacks = 0;
     this.potionsUsed = 0;
@@ -67,6 +97,7 @@ export class Combat {
     this.parries = 0;
     this.dodges = 0;
     this.perfects = 0;
+    this.counters = 0;
     this.streak = 0;
     this.bestStreak = 0;
     this.lastTap = -Infinity;
@@ -95,7 +126,8 @@ export class Combat {
     if (this.state !== 'player') return false;
     this.round++;
     this.attackAt = now;
-    const damage = this.attackDamage + (this.attacks === 0 ? this.profile.firstStrikeBonus ?? 0 : 0);
+    const damage = this.nextAttackDamage();
+    this.weakenedAttacks = Math.max(0, this.weakenedAttacks - 1);
     this.attacks++;
     this.damageBoss(damage);
     this.emit('attack', { damage });
@@ -123,7 +155,7 @@ export class Combat {
   beginSequence(start) {
     // Compose fresh components every turn; each may contain one or more strikes.
     // Phase changes speed, never the component pool or a fixed turn pattern.
-    const selected = this.mode === 'practice' && ATTACK_COMPONENTS.find(c => c.type === this.practiceAttack);
+    const selected = this.mode === 'practice' && this.components.find(c => c.type === this.practiceAttack);
     const count = selected ? 1 : 1 + Math.floor(this.random() * (this.enemy === 'normal' ? 2 : this.enemy === 'elite' ? 3 : 4));
     const speed = this.phase === 2 ? 0.88 : 1;
     this.sequence = [];
@@ -132,7 +164,8 @@ export class Combat {
     const recovery = Math.max(240, COOLDOWN + MODES[this.mode].window + this.dodgeDuration() + 20 - TELEGRAPH_MS);
     for (let i = 0; i < count && this.sequence.length < MAX_STRIKES; i++) {
       const specialUsed = this.sequence.some(hit => hit.damage > 1);
-      const pool = ATTACK_COMPONENTS.filter(c => (!c.hits || c.hits[0] <= MAX_STRIKES - this.sequence.length) && !((specialUsed || this.enemy === 'normal') && c.damage > 1));
+      const weakenUsed = this.sequence.some(hit => hit.effect === 'weaken');
+      const pool = this.components.filter(c => (!c.hits || c.hits[0] <= MAX_STRIKES - this.sequence.length) && !((specialUsed || this.enemy === 'normal') && c.damage > 1) && !(weakenUsed && c.effect === 'weaken'));
       const component = selected || pool[Math.floor(this.random() * pool.length)];
       let hand = this.random() < 0.5 ? 'left' : 'right';
       const rhythm = this.random();
@@ -147,7 +180,7 @@ export class Combat {
         const motion = MOTIONS[Math.floor(this.random() * MOTIONS.length)];
         const motionStrength = this.roll(.85, 1.15);
         const guard = component.guard || hand;
-        this.sequence.push({ type: component.type, name: component.name, damage: component.damage ?? 1, hand, guard, tempo, motion, motionStrength, group: i, stroke, strokes, windupAt, commitAt, launchAt, at, resolved: false, result: null });
+        this.sequence.push({ type: component.type, name: component.name, damage: component.damage ?? 1, effect: component.effect, hand, guard, tempo, motion, motionStrength, group: i, stroke, strokes, windupAt, commitAt, launchAt, at, resolved: false, result: null });
         // Each stroke, including a flurry, retains its own full cue and cooldown margin.
         windupAt = at + recovery + this.roll(0, component.hits ? 40 : 180) * speed;
         hand = hand === 'left' ? 'right' : 'left';
@@ -161,6 +194,7 @@ export class Combat {
     this.bossHp = Math.max(0, this.bossHp - amount);
     if (!this.bossHp) {
       this.state = 'won';
+      this.weakenedAttacks = 0;
       this.emit('won');
     } else if (this.enemy !== 'normal' && this.bossHp <= this.bossMaxHp / 2 && this.phase === 1) {
       this.phase = 2;
@@ -240,6 +274,13 @@ export class Combat {
     this.time = now;
     if (['ready', 'won', 'lost'].includes(this.state)) return;
     this.elapsed = now;
+    if (this.state === 'counter') {
+      if (now >= this.attackAt + COUNTER_MS) {
+        this.state = 'player';
+        this.emit('turn', { counter: true });
+      }
+      return;
+    }
     if (this.state !== 'boss') return;
     if (this.pending && now - this.pending.at > CHORD_MS) {
       const first = this.pending;
@@ -261,23 +302,42 @@ export class Combat {
         hit.result = 'miss';
         this.hits++;
         this.streak = 0;
-        const damage = this.mode === 'practice' ? 0 : Math.max(1, hit.damage - (hit.damage > 1 ? this.profile.specialReduction ?? 0 : 0));
+        const damage = this.mode === 'practice' || hit.damage === 0 ? 0 : Math.max(1, hit.damage - (hit.damage > 1 ? this.profile.specialReduction ?? 0 : 0));
         this.hp = Math.max(0, this.hp - damage);
-        this.emit('hurt', { damage, attackDamage: hit.damage });
+        if (hit.effect === 'weaken') {
+          this.weakenedAttacks = WEAKEN_ATTACKS;
+          this.emit('weaken');
+        } else this.emit('hurt', { damage, attackDamage: hit.damage });
         if (this.hp <= 0) {
           this.state = 'lost';
+          this.weakenedAttacks = 0;
           this.emit('lost');
           return;
         }
       }
     }
     if (now >= this.endAt) {
+      // Reward the whole completed enemy turn, once; individual parries still
+      // deal no damage and an early final parry cannot skip the enemy's motion.
+      if (this.sequence.length && this.sequence.every(hit => hit.result === 'perfect')) {
+        this.state = 'counter';
+        this.attackAt = now;
+        this.counters++;
+        const damage = Math.min(this.bossHp, this.counterDamage());
+        this.weakenedAttacks = Math.max(0, this.weakenedAttacks - 1);
+        this.emit('counter', { damage, strikes: this.sequence.length });
+        this.damageBoss(damage);
+        return;
+      }
       this.state = 'player';
       this.emit('turn');
     }
   }
 
   nextHit() { return this.sequence.find(h => !h.resolved); }
+  outgoingDamage(amount) { return amount * (this.weakenedAttacks > 0 ? WEAKEN_MULTIPLIER : 1); }
+  nextAttackDamage() { return this.outgoingDamage(this.attackDamage + (this.attacks === 0 ? this.profile.firstStrikeBonus ?? 0 : 0)); }
+  counterDamage() { return this.outgoingDamage(Math.max(1, Math.min(3, Math.ceil(this.attackDamage / 2)))); }
   dodgeDuration() { return MODES[this.mode].window * 2 + DODGE_EXTRA_MS; }
   isDodgingAt(now) { return now >= this.dodgeAt && now < this.dodgeAt + this.dodgeDuration(); }
   cooldownRemaining(now = this.time) { return Math.max(0, Math.max(this.lastTap, this.dodgeAt) + COOLDOWN - now); }

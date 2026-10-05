@@ -33,7 +33,7 @@
       <div class="section-heading"><span><span class="tiny-cross">+</span> THE PARRY EXPERIMENT</span><span>승리의 조건은, 타이밍.</span></div>
       <nav class="view-tabs" aria-label="플레이 방식"><button id="show-map" aria-pressed="true">원정 지도 <span>EXPEDITION</span></button><button id="show-solo" aria-pressed="false">단일 전투 · 연습</button></nav>
       <section id="expedition-view" aria-label="원정 지도">
-        <header class="expedition-heading"><div><span class="overline">CHAPTER 01 / THE HOLLOW ROAD</span><h1>공허로 향하는 길</h1><p>네 개의 출발점 · 선택한 길에 따라 달라지는 위험과 보상</p></div><div class="expedition-progress"><strong id="expedition-floor">00</strong><span>/ 10 지점</span></div></header>
+        <header class="expedition-heading"><div><span class="overline">CHAPTER 01 / THE HOLLOW ROAD</span><h1>공허로 향하는 길</h1><p>연결된 길을 따라 최종 보스에 도전하세요</p></div><div class="expedition-progress"><strong id="expedition-floor">00</strong><span>/ 10 지점</span></div></header>
         <div id="expedition-status" class="expedition-status" aria-label="원정 상태"></div>
         <details class="training-panel" id="training-panel">
           <summary id="training-toggle"><span>캐릭터 강화 <small id="training-ready">경험치로 능력 성장</small></span><b><span id="xp-balance">0</span> <small>XP</small></b></summary>
@@ -45,9 +45,9 @@
           </div>
         </details>
         <details class="route-guide" id="route-guide" open>
-          <summary>길마다 다른 대가 <small>직진 기준 · 최종 보스 포함</small></summary>
+          <summary>경로 안내 <small>직진 기준 · 최종 보스 포함</small></summary>
           <div class="route-cards" id="route-cards"></div>
-          <p>5번째 지점의 갈림길에서만 이웃 길로 이동할 수 있습니다. 시련·사냥과 안식·탐색은 최종 보스에서만 합류합니다.</p>
+          <p>빛나는 다음 지점으로 이동하세요. 지나온 지점으로 돌아갈 수 없습니다.</p>
         </details>
         <div class="expedition-layout">
           <section class="map-panel" aria-label="분기 지도">
@@ -79,6 +79,7 @@
             <div class="special-warning" id="special-warning" role="status" hidden><span id="special-risk"></span><strong id="special-name"></strong></div>
             <div class="combat-feedback" id="feedback" aria-live="polite"><strong></strong><span></span></div>
             <div class="timing-caption" id="timing-caption">상대의 움직임을 읽으세요</div>
+            <div class="weaken-status" id="weaken-status" role="status" title="직접 공격과 자동 반격이 각각 1회를 소모합니다. 회복으로는 소모되지 않습니다." hidden></div>
             <div class="arena-bottom"><span class="turn-tag" id="turn-tag"><i></i> 전투 대기</span><span class="arena-life" id="arena-life" aria-label="생명력 5/5"><i></i><i></i><i></i><i></i><i></i><b>5 / 5</b></span><span id="round-label">ROUND —</span></div>
 
             <div class="death-screen" id="death-screen" role="status" aria-live="assertive" hidden><span lang="en">You Died</span></div>
@@ -95,17 +96,18 @@
           </div>
 
           <div class="action-dock">
-            <button id="parry-left" class="action-button parry-button" aria-label="왼쪽 패링" aria-describedby="parry-cooldown-rule" aria-keyshortcuts="A" disabled><span class="parry-direction" aria-hidden="true">←</span><span><b>왼쪽 패링</b><small>왼쪽 공격 방어</small></span><kbd>A</kbd><span class="cooldown-fill" aria-hidden="true"></span></button>
+            <button id="parry-left" class="action-button parry-button" aria-label="왼쪽 패링" aria-describedby="parry-cooldown-rule counter-rule" aria-keyshortcuts="A" disabled><span class="parry-direction" aria-hidden="true">←</span><span><b>왼쪽 패링</b><small>왼쪽 공격 방어</small></span><kbd>A</kbd><span class="cooldown-fill" aria-hidden="true"></span></button>
             <button id="dodge" class="action-button dodge-button" aria-label="회피" aria-describedby="dodge-rule parry-cooldown-rule" aria-keyshortcuts="K" disabled><span><b>회피</b><small>방향 없이 피하기</small></span><kbd>K</kbd><span class="cooldown-fill" aria-hidden="true"></span></button>
-            <button id="parry-right" class="action-button parry-button" aria-label="오른쪽 패링" aria-describedby="parry-cooldown-rule" aria-keyshortcuts="D" disabled><span class="parry-direction" aria-hidden="true">→</span><span><b>오른쪽 패링</b><small>오른쪽 공격 방어</small></span><kbd>D</kbd><span class="cooldown-fill" aria-hidden="true"></span></button>
+            <button id="parry-right" class="action-button parry-button" aria-label="오른쪽 패링" aria-describedby="parry-cooldown-rule counter-rule" aria-keyshortcuts="D" disabled><span class="parry-direction" aria-hidden="true">→</span><span><b>오른쪽 패링</b><small>오른쪽 공격 방어</small></span><kbd>D</kbd><span class="cooldown-fill" aria-hidden="true"></span></button>
             <div class="player-actions">
-              <button id="attack" class="action-button attack-button" aria-keyshortcuts="J" disabled><span><b>공격</b><small id="attack-hint">내 차례</small></span><kbd>J</kbd></button>
+              <button id="attack" class="action-button attack-button" aria-describedby="weaken-status" aria-keyshortcuts="J" disabled><span><b>공격</b><small id="attack-hint">내 차례</small></span><kbd>J</kbd></button>
               <button id="items" class="action-button item-button" aria-haspopup="dialog" aria-controls="item-dialog" disabled><span><b>아이템</b><small id="item-hint">회복약 ×2</small></span></button>
             </div>
           </div>
           <div class="below-arena"><span><i class="small-diamond"></i> 양손은 동시 패링 또는 회피</span><span>패링 A/D · 회피 K · 공격 J</span></div>
           <p id="dodge-rule" class="dodge-rule"></p>
           <p id="parry-cooldown-rule" class="parry-cooldown-rule"></p>
+          <p id="counter-rule" class="dodge-rule"></p>
         </section>
 
         <aside class="sidebar">
@@ -130,6 +132,7 @@
           <section class="settings-panel">
             <div id="solo-settings"><div class="mode-select" role="group" aria-label="전투 모드"><button data-mode="challenge" class="selected" aria-pressed="true">도전 모드</button><button data-mode="practice" aria-pressed="false">연습 모드 <span>∞</span></button></div>
               <p id="mode-description">생명력 5칸 · 회복약 2개. 한 대도 맞지 않는 승리에 도전하세요.</p>
+              <label class="practice-picker">전투 상대<select id="enemy-design"><option value="hound">재의 사냥개</option><option value="bell">종을 짊어진 집행자</option><option value="warden">공허의 파수꾼</option></select><small>단일 전투 체력 30 · 원정 일반: 사냥개 / 정예: 집행자</small></label>
               <label id="practice-attack-label" class="practice-picker" hidden>연습할 공격<select id="practice-attack"><option value="random">전체 무작위 조합</option></select><small>선택한 공격을 한 묶음씩 반복합니다</small></label>
             </div>
             <label class="toggle-row" for="guide"><span>타이밍 가이드 <small>원을 표시합니다</small></span><input type="checkbox" id="guide" checked><span class="toggle"></span></label>

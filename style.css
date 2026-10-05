@@ -28,6 +28,7 @@
 .player-actions .item-button{background:#213028;border:1px solid #648b72;color:#c0e3cc}
 .player-actions .action-button b{font-size:15px;letter-spacing:0}
 .combat-feedback.heal strong{color:#bcf1ce}
+.combat-feedback.weaken strong{color:#d0a9fa}.weaken-status{position:absolute;bottom:92px;left:14px;right:14px;max-width:285px;margin:auto;padding:6px 8px;border:1px solid #9b78c160;border-radius:3px;background:#21172ae8;color:#dec6f5;font-size:10px;text-align:center;pointer-events:none}.attack-button.weakened{border-color:#ad83c5;color:#dec6f5;background:#352a3d}.special-warning[data-effect=weaken],.special-warning[data-effect=weaken] span{color:#d4b1fa}.special-warning[data-effect=weaken] strong{border-color:#ac86ce}
 .special-warning{position:absolute;left:14px;right:14px;z-index:2;text-align:center;pointer-events:none;color:#ffb8b0;text-shadow:0 2px 12px #000;letter-spacing:1px}.special-warning[hidden]{display:none}.special-warning span{display:block;font-size:10px;letter-spacing:2px;color:#f39b95}.special-warning strong{display:inline-block;margin-top:5px;font-size:19px;font-weight:500;padding:0 18px;border-left:1px solid #ad6570;border-right:1px solid #ad6570}.arena[data-special="2"]{border-color:#9b5a62}.arena[data-special="3"]{border-color:#ca6574;box-shadow:0 0 24px #a3293920}
 @media(max-width:800px){.special-warning strong{font-size:15px}.special-warning span{font-size:9px}}
 #item-dialog{position:fixed;inset:auto 0 24px;margin:0 auto;width:calc(100% - 32px);max-width:460px;max-height:calc(100svh - 48px);overflow:auto;border:1px solid #69806a;border-radius:8px;background:#18251e;color:var(--text);padding:24px;box-shadow:0 12px 80px #0009}
@@ -140,6 +141,7 @@
 .map-node.current{opacity:1}
 .map-node.current .node-ring{outline:2px solid #e2c997;outline-offset:4px}
 .map-node.current small{color:#e2c997}
+.route-cards.single-route,.map-route-headings.single-route{grid-template-columns:1fr}
 .map-node.locked{opacity:.25}
 .map-paths path.locked{opacity:.18}
 .map-destination,.map-origin{position:absolute;left:0;right:0;text-align:center;font:9px var(--mono);letter-spacing:2px;color:#9aab8b;pointer-events:none}

@@ -86,6 +86,232 @@ export function bossRigPoseAt(hit, now, reduced = false) {
   return pose;
 }
 
+export const HOUND_RECOVERY_MS = 360;
+// Authored beast choreography: body travel, airborne feet and supporting paws
+// share one pose. Only the immutable contact time comes from the combat plan.
+export function houndRigPoseAt(hit, now, reduced = false, hurtAt = -Infinity) {
+  const t = reduced ? 0 : now / 1000;
+  const hurtProgress = (now - hurtAt) / 380;
+  const recoil = reduced || hurtProgress <= 0 || hurtProgress >= 1 ? 0 : Math.sin(hurtProgress * Math.PI);
+  const pose = { crouch: .4 + .08 * recoil, lean: .96 - .4 * recoil, twist: Math.sin(t * 1.4) * .04,
+    roll: 0, step: .1, lift: 0, breath: Math.sin(t * 2.7) * .018, cloth: .12,
+    jaw: .13 + .28 * recoil, ears: .12 + .45 * recoil, tail: Math.sin(t * 2.1) * .2,
+    travel: { x: 0, y: 0, depth: 1 }, feet: { left: { forward: .18, lift: 0 }, right: { forward: -.18, lift: 0 } }, arms: {} };
+  for (const hand of ['left', 'right']) {
+    const side = hand === 'left' ? -1 : 1;
+    pose.arms[hand] = { raise: -.7, turn: 0, spread: side * .25, elbow: -.95, wrist: -.3, curl: .12 };
+  }
+  if (!hit || reduced || now <= hit.windupAt || now >= hit.at + HOUND_RECOVERY_MS) return pose;
+  const unit = value => Math.max(0, Math.min(1, value));
+  const recover = now <= hit.at ? 1 : 1 - smooth(unit((now - hit.at) / HOUND_RECOVERY_MS));
+  const drive = smooth(unit((now - (hit.at - 260)) / 260));
+  const cut = smooth(unit((now - (hit.at - 160)) / 160));
+  const load = smooth(unit((now - hit.windupAt) / Math.min(340, hit.at - hit.windupAt - 260)));
+  const p = load * (1 - drive) * recover, s = cut * recover, d = drive * recover;
+  const air = Math.sin(drive * Math.PI) ** 2 * recover;
+  const side = hit.hand === 'left' ? -1 : 1;
+  const feint = hit.tempo === 'feint' && now < hit.commitAt
+    ? Math.sin(unit((now - hit.windupAt) / (hit.commitAt - hit.windupAt)) * Math.PI) ** 2 : 0;
+  pose.jaw += .12 * p + .45 * s; pose.ears += .2 * p + .4 * d;
+  pose.cloth += .25 * p + .8 * d; pose.tail += side * (.3 * p - .5 * s);
+  // The other paw braces instead of performing a second, unannounced attack.
+  for (const hand of ['left', 'right']) {
+    const arm = pose.arms[hand], active = hit.guard === 'both' || hit.hand === hand;
+    arm.raise += .12 * p; arm.elbow -= .2 * p;
+    if (!active) { arm.raise += .22 * s; continue; }
+    arm.curl += -.1 * p + .65 * s;
+    const direction = hand === 'left' ? -1 : 1;
+    switch (hit.type) {
+      case 'hound-rush':
+      case 'hound-rebound':
+      case 'hound-pounce':
+        arm.raise += .25 * p - 1.18 * s; arm.elbow += -.45 * p + .6 * s;
+        arm.spread += direction * (.3 * p + .18 * air); arm.wrist -= .6 * s;
+        break;
+      case 'hound-maul':
+        arm.raise += -1.7 * p - .7 * s; arm.elbow += -.25 * p + .65 * s;
+        arm.spread += direction * .35 * p; arm.wrist -= .5 * s;
+        break;
+      case 'hound-scoop':
+        arm.raise += .4 * p - .9 * s; arm.elbow += .3 * p - .15 * s;
+        arm.turn = direction * (-.35 * p + .9 * s); arm.wrist += .2 * p - .65 * s;
+        break;
+      default:
+        arm.raise += -.6 * p - .25 * s; arm.elbow += -.25 * p + .55 * s;
+        arm.turn = direction * (-.45 * p + .95 * s);
+        arm.spread += direction * (.65 * p - .15 * s); arm.wrist -= .6 * s;
+        break;
+    }
+  }
+  switch (hit.type) {
+    case 'hound-rush':
+      pose.crouch += .15 * p - .12 * s; pose.lean += .22 * p + .18 * s;
+      pose.travel = { x: 24 * p - 165 * d, y: 28 * d, depth: 1 + .06 * s };
+      pose.feet.left = { forward: .18 - .32 * p + .38 * s, lift: .2 * air };
+      pose.feet.right = { forward: -.18 - .2 * s, lift: .32 * air };
+      break;
+    case 'hound-pounce':
+    case 'hound-rebound': {
+      const retreat = hit.type === 'hound-rebound';
+      pose.crouch += .13 * p - .22 * air + .08 * s; pose.lean += .2 * p - .35 * air;
+      pose.lift = (retreat ? .95 : 1.25) * air;
+      pose.travel = { x: (retreat ? 105 : 12) * p - 140 * d, y: 24 * d, depth: 1 - (retreat ? .16 : 0) * p + .08 * s };
+      pose.feet.left = { forward: .18 - .3 * air, lift: .36 * air };
+      pose.feet.right = { forward: -.18 - .18 * air, lift: .28 * air };
+      break;
+    }
+    case 'hound-maul':
+      pose.crouch -= .34 * p; pose.crouch += .17 * s;
+      pose.lean -= .85 * p; pose.lean += .18 * s; pose.lift = .5 * air;
+      pose.travel = { x: 10 * p - 70 * d, y: 20 * s, depth: 1 + .09 * s };
+      pose.feet.left.lift = pose.feet.right.lift = .18 * air;
+      break;
+    case 'hound-scoop':
+      pose.crouch += .13 * p + .09 * s; pose.lean += .14 * p;
+      pose.twist += side * (.3 * p - .7 * s); pose.roll = side * (.09 * p - .1 * s);
+      pose.travel = { x: side * 16 * p - 60 * d, y: 8 * s, depth: 1 + .04 * s };
+      pose.feet[hit.hand].forward += .32 * s;
+      break;
+    case 'hound-flurry':
+      pose.crouch += .07 * p - .14 * s; pose.lean -= .2 * s;
+      pose.twist += side * (.4 * p - .68 * s); pose.roll = side * (.13 * p - .17 * s);
+      pose.travel = { x: side * (36 * p - 38 * s) - 36 * d, y: 6 * s, depth: 1 + .045 * s };
+      pose.feet[hit.hand] = { forward: (hit.hand === 'left' ? .18 : -.18) + .25 * s, lift: .16 * air };
+      break;
+    case 'hound-feint':
+      pose.lean -= .28 * feint + .12 * s;
+      pose.twist += side * (-.25 * p + .45 * s + .5 * feint); pose.roll = side * .18 * feint;
+      pose.travel = { x: side * (-32 * p + 34 * feint) - 85 * d, y: 8 * s, depth: 1 + .06 * s };
+      pose.feet[hit.hand].forward += .3 * s;
+      break;
+    default:
+      pose.twist += side * (.28 * p - .6 * s + .24 * feint); pose.roll = side * .12 * s;
+      pose.lean -= .15 * s; pose.crouch += .08 * p;
+      pose.travel = { x: side * (20 * p - 14 * s + 32 * feint) - 34 * d, y: 5 * s, depth: 1 + .035 * s };
+      pose.feet[hit.hand].forward += .22 * s;
+      break;
+  }
+  return pose;
+}
+
+export const BELL_RECOVERY_MS = 400;
+// A planted, weight-driven fighter: the shell and clapper lag behind the fists.
+// Projectile gestures peak at launch; defense still resolves at arrival.
+export function bellRigPoseAt(hit, now, reduced = false, hurtAt = -Infinity) {
+  const t = reduced ? 0 : now / 1000;
+  const recoil = reduced ? 0 : Math.sin(Math.max(0, Math.min(1, (now - hurtAt) / 400)) * Math.PI);
+  const pose = { crouch: .14 + .06 * recoil, lean: .06 - .14 * recoil, twist: 0, roll: 0, step: 0, lift: 0,
+    breath: Math.sin(t * 1.1) * .006, cloth: .05, bellTilt: Math.sin(t * .9) * .018 + .12 * recoil,
+    bellTurn: 0, bellForward: 0, clapper: Math.sin(t * 1.2) * .055, travel: { x: 0, y: 0, depth: 1 },
+    feet: { left: { forward: .12, lift: 0 }, right: { forward: -.12, lift: 0 } }, arms: {} };
+  for (const hand of ['left', 'right']) pose.arms[hand] = { raise: -.12, turn: 0, spread: (hand === 'left' ? -1 : 1) * .2, elbow: -.18, wrist: 0 };
+  const release = hit?.launchAt ?? hit?.at;
+  if (!hit || reduced || now <= hit.windupAt || now >= release + BELL_RECOVERY_MS) return pose;
+  const unit = value => Math.max(0, Math.min(1, value));
+  const groundHold = hit.type === 'bell-groundbreak' ? 120 : 0;
+  const recovery = 1 - smooth(unit((now - release - groundHold) / (BELL_RECOVERY_MS - groundHold)));
+  const drive = smooth(unit((now - release + 240) / 240));
+  const load = smooth(unit((now - hit.windupAt) / Math.min(800, release - hit.windupAt - 240)));
+  const p = load * (1 - drive) * recovery, s = drive * recovery;
+  const follow = Math.sin(unit((now - release) / BELL_RECOVERY_MS) * Math.PI) * recovery;
+  const side = hit.hand === 'left' ? -1 : 1;
+  const fake = hit.tempo === 'feint' && now < hit.commitAt
+    ? Math.sin(unit((now - hit.windupAt) / (hit.commitAt - hit.windupAt)) * Math.PI) ** 2 : 0;
+  pose.cloth += .12 * p + .4 * s; pose.bellTilt += -.1 * p + .18 * s + .2 * follow;
+  pose.clapper += -.22 * p + .5 * s - .3 * follow;
+  for (const hand of ['left', 'right']) {
+    const arm = pose.arms[hand], direction = hand === 'left' ? -1 : 1;
+    if (hit.guard !== 'both' && hand !== hit.hand) { arm.spread += direction * .12 * p; continue; }
+    switch (hit.type) {
+      case 'bell-pendulum':
+        arm.raise -= .7 * p + .6 * s; arm.turn = direction * (-.45 * p + 1.05 * s + .2 * fake);
+        arm.spread += direction * (.85 * p - .08 * s); arm.elbow -= .16 * p;
+        break;
+      case 'bell-auger':
+        arm.raise += .35 * p - 1.55 * s; arm.turn = direction * (-.25 * p + .65 * s);
+        arm.elbow += .08 * p - .45 * s; arm.wrist -= .2 * s;
+        break;
+      case 'bell-march':
+        arm.raise -= .35 * p + 1.42 * s; arm.elbow -= 1.1 * p; arm.turn = -direction * .2 * p;
+        break;
+      case 'bell-groundbreak':
+        // Both hands brace the bell rim as the shoulders roll it into the floor.
+        arm.raise -= 1.25 * p + 1.95 * s; arm.elbow -= .55 * p;
+        arm.spread += direction * (.28 * p + .05 * s); arm.wrist += .2 * p - .2 * s;
+        break;
+      case 'bell-lament':
+        arm.raise -= 1.15 * p + .65 * s; arm.spread += direction * (.5 * p - .08 * s);
+        arm.elbow -= .3 * p + 1.15 * s; arm.turn = -direction * .2 * s;
+        break;
+      case 'bell-resonance':
+        arm.raise -= .75 * p + 1.1 * s; arm.spread += direction * (.65 * p - .03 * s);
+        arm.elbow -= .5 * p + 1.3 * s; arm.wrist -= .3 * s;
+        break;
+      case 'bell-triplet':
+        arm.raise -= 1.35 * p + .72 * s; arm.elbow -= .6 * p;
+        arm.turn = direction * (-.12 * p + .3 * s);
+        break;
+      default:
+        arm.raise -= (hit.type === 'bell-toll' ? 2.5 : 2.2) * p + .55 * s;
+        arm.elbow -= .55 * p; arm.spread += direction * (.2 * p + .12 * s); arm.wrist += .15 * p;
+        break;
+    }
+  }
+  switch (hit.type) {
+    case 'bell-pendulum':
+      pose.twist = side * (.2 * p - .7 * s + .16 * fake); pose.roll = side * (-.08 * p + .1 * s);
+      pose.bellTurn = side * (-.2 * p + .32 * follow); pose.travel.x = -42 * s;
+      break;
+    case 'bell-auger':
+      pose.crouch += .3 * p - .06 * s; pose.lean += .24 * p - .16 * s;
+      pose.twist = side * (.23 * p - .42 * s); pose.travel.x = -35 * s;
+      pose.bellTilt -= .2 * s;
+      break;
+    case 'bell-march': {
+      const step = smooth(unit((now - hit.windupAt) / (release - hit.windupAt - 240)));
+      const footLift = Math.sin(step * Math.PI) ** 2 * recovery;
+      pose.feet[hit.hand] = { forward: pose.feet[hit.hand].forward + .22 * step * recovery, lift: .28 * footLift };
+      pose.roll = -side * .1 * footLift; pose.lean += .19 * s;
+      pose.travel.x = -70 * step * recovery - 40 * s; pose.travel.y = 12 * s;
+      break;
+    }
+    case 'bell-triplet':
+      pose.twist = side * (.18 * p - .28 * s); pose.roll = side * (.1 * p - .12 * s);
+      pose.crouch += .12 * s; pose.travel.x = -25 * s; pose.bellTurn = side * .22 * follow;
+      break;
+    case 'bell-groundbreak':
+      pose.crouch += -.08 * p + .59 * s; pose.lean += -.2 * p + 1.04 * s;
+      pose.bellTilt += -.12 * p + .27 * s; pose.bellForward = -.08 * p + .24 * s;
+      // Keep the rim planted for 120ms; secondary motion starts on recovery.
+      pose.bellTilt -= .2 * follow;
+      pose.clapper += .3 * p - .55 * s;
+      break;
+    case 'bell-lament':
+      pose.crouch += .12 * p; pose.lean -= .1 * p;
+      pose.bellTilt += -.22 * p + .34 * s + .26 * follow;
+      pose.clapper += .55 * p - .85 * s + .55 * follow;
+      pose.travel.x = 22 * p; pose.bellTurn = .14 * follow;
+      break;
+    case 'bell-resonance':
+      pose.lean -= .12 * p; pose.crouch += .06 * s; pose.travel.x = 35 * p;
+      pose.bellTilt += .12 * follow; pose.clapper += .65 * follow;
+      break;
+    case 'bell-fault':
+      pose.crouch -= .08 * p; pose.crouch += .34 * s; pose.lean += -.1 * p + .32 * s;
+      pose.roll = side * .1 * s; pose.travel.x = -62 * s; pose.bellTilt += .22 * follow;
+      break;
+    case 'bell-toll':
+      pose.crouch -= .1 * p; pose.crouch += .4 * s; pose.lean += -.16 * p + .4 * s;
+      pose.travel.x = -50 * s; pose.bellTilt += .3 * follow; pose.clapper += .4 * follow;
+      break;
+    default:
+      pose.crouch += .16 * s; pose.lean += -.08 * p + .17 * s;
+      pose.twist = side * (.12 * p - .16 * s); pose.travel.x = -28 * s;
+      break;
+  }
+  return pose;
+}
+
 export function dodgeMotionAt(now, dodgeAt, reduced = false) {
   const progress = (now - dodgeAt) / 500;
   if (reduced || progress <= 0 || progress >= 1) return 0;

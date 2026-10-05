@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Combat, MODES, COOLDOWN, CHORD_MS, ATTACK_COMPONENTS, TELEGRAPH_MS, MAX_STRIKES, ITEM_USE_MS, DODGE_EXTRA_MS } from './combat.mjs';
+import { Combat, MODES, COOLDOWN, CHORD_MS, ATTACK_COMPONENTS, HOUND_ATTACK_COMPONENTS, BELL_ATTACK_COMPONENTS, TELEGRAPH_MS, MAX_STRIKES, ITEM_USE_MS, DODGE_EXTRA_MS, COUNTER_MS } from './combat.mjs';
 import { MOTIONS, motionAt, attackPoseAt, playerPoseAt, specialIntensityAt } from './motion.mjs';
 
 function seeded(seed) {
@@ -16,6 +16,250 @@ function parry(game, now, hit = game.nextHit()) {
   game.release(now, 'left'); game.release(now, 'right');
   return result;
 }
+
+test('the hound has its own eight attacks, practice selection and 200 no-hit mixed-defense battles', () => {
+  const types = new Set(HOUND_ATTACK_COMPONENTS.map(c => c.type)), seen = new Set();
+  assert.equal(types.size, 8);
+  assert.ok(ATTACK_COMPONENTS.every(c => !types.has(c.type)), 'Hound never selects a sword or projectile component');
+  assert.equal(new Combat({ enemy: 'normal' }).species, 'hound');
+  assert.equal(new Combat({ enemy: 'elite' }).species, 'bell');
+  assert.equal(new Combat({ species: 'hound', practiceAttack: 'cleave' }).practiceAttack, 'random');
+  assert.equal(new Combat({ practiceAttack: 'hound-pounce' }).practiceAttack, 'random');
+  for (const component of HOUND_ATTACK_COMPONENTS) {
+    const game = new Combat({ species: 'hound', mode: 'practice', practiceAttack: component.type, random: () => .99 });
+    game.start(); game.attack(0);
+    assert.ok(game.sequence.every(hit => hit.type === component.type && hit.launchAt === null));
+    assert.equal(game.sequence.length, component.hits?.[1] ?? 1);
+    for (const hit of game.sequence) assert.equal(parry(game, hit.at, hit), 'perfect');
+    game.update(game.endAt);
+    assert.equal(game.counters, 1); assert.equal(game.bossHp, 28);
+  }
+  for (const mode of Object.keys(MODES)) for (const enemy of ['normal', 'boss']) for (let seed = 1; seed <= 50; seed++) {
+    const game = new Combat({ species: 'hound', enemy, mode, random: seeded(seed) });
+    game.start();
+    while (game.state !== 'won') {
+      game.attack(game.time + 1);
+      if (game.state === 'won') break;
+      const plan = structuredClone(game.sequence);
+      for (const [i, hit] of game.sequence.entries()) {
+        assert.ok(types.has(hit.type)); seen.add(hit.type);
+        assert.ok(hit.at - hit.commitAt >= TELEGRAPH_MS && hit.damage === 1);
+        if ((i + seed) % 2) assert.equal(parry(game, hit.at + MODES[mode].window - 1, hit), 'parry');
+        else {
+          assert.equal(game.dodge(hit.at - game.dodgeDuration() + 1), 'dodge');
+          game.update(hit.at); assert.equal(hit.result, 'dodge');
+        }
+      }
+      assert.deepEqual(game.sequence.map(hit => ({ ...hit, resolved: false, result: null })), plan);
+      game.update(game.endAt);
+    }
+    assert.equal(game.hits, 0); assert.equal(game.hp, 5);
+    assert.equal(game.round, enemy === 'normal' ? 7 : 30);
+  }
+  assert.deepEqual(seen, types);
+});
+
+test('bell executioner owns ten attacks, fair mixed defenses, two phases and capped special damage', () => {
+  const types = new Set(BELL_ATTACK_COMPONENTS.map(c => c.type)), seen = new Set(), phases = new Set();
+  assert.equal(types.size, 10);
+  assert.ok([...ATTACK_COMPONENTS, ...HOUND_ATTACK_COMPONENTS].every(c => !types.has(c.type)));
+  assert.equal(new Combat({ enemy: 'elite' }).bossMaxHp, 15);
+  assert.equal(new Combat({ species: 'bell', practiceAttack: 'hound-maul' }).practiceAttack, 'random');
+  for (const component of BELL_ATTACK_COMPONENTS) {
+    const game = new Combat({ species: 'bell', mode: 'practice', practiceAttack: component.type, random: () => .99 });
+    game.start(); game.attack(0);
+    assert.ok(game.sequence.every(hit => hit.type === component.type && hit.damage === (component.damage ?? 1)));
+    assert.equal(game.sequence.length, component.hits?.[1] ?? 1);
+    for (const hit of game.sequence) assert.equal(parry(game, hit.at, hit), 'perfect');
+    game.update(game.endAt); assert.equal(game.counters, 1); assert.equal(game.bossHp, 28);
+    if (component.damage) {
+      const damaged = new Combat({ species: 'bell', random: () => 0 }); damaged.start();
+      damaged.components = [component]; damaged.attack(0);
+      damaged.update(damaged.sequence[0].at + MODES.challenge.window + 1);
+      assert.equal(damaged.hp, 5 - component.damage);
+    }
+  }
+  for (const mode of Object.keys(MODES)) for (let seed = 1; seed <= 100; seed++) {
+    const game = new Combat({ enemy: 'elite', mode, random: seeded(seed) }); game.start();
+    while (game.state !== 'won') {
+      game.attack(game.time + 1);
+      if (game.state === 'won') break;
+      phases.add(game.phase);
+      assert.ok(game.sequence.length <= MAX_STRIKES);
+      assert.ok(game.sequence.filter(h => h.damage > 1).length <= 1);
+      assert.ok(game.sequence.filter(h => h.effect === 'weaken').length <= 1);
+      for (const [i, hit] of game.sequence.entries()) {
+        assert.ok(types.has(hit.type)); seen.add(hit.type);
+        assert.ok(hit.at - (hit.launchAt ?? hit.commitAt) >= TELEGRAPH_MS);
+        if ((seed + i) % 2) assert.equal(parry(game, hit.at + MODES[mode].window - 1, hit), 'parry');
+        else {
+          assert.equal(game.dodge(hit.at - game.dodgeDuration() + 1), 'dodge');
+          game.update(hit.at); assert.equal(hit.result, 'dodge');
+        }
+      }
+      game.update(game.endAt);
+    }
+    assert.equal(game.hp, 5); assert.equal(game.hits, 0); assert.equal(game.round, 15);
+  }
+  assert.deepEqual(seen, types); assert.deepEqual(phases, new Set([1, 2]));
+});
+
+test('ground bell impact launches a delayed wave, with one two-HP hit that remains fully defendable', () => {
+  const component = BELL_ATTACK_COMPONENTS.find(c => c.type === 'bell-groundbreak');
+  for (const mode of Object.keys(MODES)) for (const phase of [1, 2]) for (const defense of ['perfect', 'parry', 'dodge', 'miss']) {
+    const game = new Combat({ species: 'bell', mode, random: () => 0 });
+    game.components = [component]; game.start(); game.phase = phase; game.attack(0);
+    const hit = game.sequence[0];
+    assert.equal(game.sequence.length, 1); assert.equal(hit.guard, 'both'); assert.equal(hit.damage, 2);
+    assert.ok(hit.at - hit.launchAt >= TELEGRAPH_MS);
+    assert.equal(parry(game, hit.launchAt, hit), 'early', 'The bell contact itself is not the player hit');
+    game.update(hit.at - 1); assert.equal(game.hp, 5); assert.equal(game.hits, 0);
+    if (defense === 'dodge') game.dodge(hit.at);
+    else if (defense !== 'miss') assert.equal(parry(game, hit.at + (defense === 'parry' ? MODES[mode].window - 1 : 0), hit), defense);
+    game.update(game.endAt);
+    assert.equal(game.hp, mode === 'challenge' && defense === 'miss' ? 3 : 5);
+    assert.equal(game.hits, defense === 'miss' ? 1 : 0);
+    assert.equal(game.weakenedAttacks, 0, 'This is a damaging wave, not the weakening skill');
+    assert.equal(game.counters, defense === 'perfect' ? 1 : 0);
+    game.update(game.time); assert.equal(game.hits, defense === 'miss' ? 1 : 0);
+  }
+});
+
+test('bell lament weakens two attacks without HP loss, refreshes without stacking and never survives a battle', () => {
+  const lament = BELL_ATTACK_COMPONENTS.find(c => c.type === 'bell-lament');
+  const missTurn = game => { game.update(game.endAt); game.drain(); };
+  for (const mode of Object.keys(MODES)) for (const power of [1, 3, 8]) {
+    const profile = { hp: 3, attackDamage: power, firstStrikeBonus: 2, specialReduction: 2 };
+    const game = new Combat({ species: 'bell', mode, bossHp: 100, profile, random: () => 0 });
+    game.components = [lament]; game.start(); game.attack(0);
+    const hit = game.sequence[0];
+    assert.equal(hit.damage, 0); assert.equal(hit.guard, 'both');
+    game.update(hit.at + MODES[mode].window + 1);
+    assert.equal(game.hp, 3); assert.equal(game.hits, 1);
+    assert.equal(game.weakenedAttacks, 2); assert.equal(game.nextAttackDamage(), power * .5);
+    assert.equal(game.drain().filter(e => e.type === 'weaken').length, 1);
+    game.update(game.time); assert.equal(game.drain().length, 0, 'Repeated frames cannot reapply the effect');
+    assert.equal(game.attack(game.time), false); assert.equal(game.weakenedAttacks, 2);
+    game.update(game.endAt);
+    if (mode === 'challenge') {
+      assert.equal(game.heal(game.time + 1), true); assert.equal(game.weakenedAttacks, 2);
+      const wave = game.sequence[0]; game.dodge(wave.at); game.update(game.endAt);
+      assert.equal(game.weakenedAttacks, 2, 'Recovery and successful defense do not spend weak attacks');
+    }
+    game.attack(game.time + 1); assert.equal(game.weakenedAttacks, 1);
+    missTurn(game); assert.equal(game.weakenedAttacks, 2, 'Reapplication refreshes to two, never stacks');
+    game.components = [BELL_ATTACK_COMPONENTS[0]];
+    const hp = game.bossHp, counter = game.counterDamage();
+    game.attack(game.time + 1);
+    assert.equal(game.bossHp, hp - power * .5); assert.equal(game.weakenedAttacks, 1);
+    for (const strike of game.sequence) assert.equal(parry(game, strike.at, strike), 'perfect');
+    game.update(game.endAt);
+    assert.equal(game.bossHp, hp - power * .5 - counter);
+    assert.equal(game.weakenedAttacks, 0); assert.equal(game.nextAttackDamage(), power);
+    game.update(game.attackAt + COUNTER_MS);
+    const recoveredHp = game.bossHp; game.attack(game.time + 1);
+    assert.equal(game.bossHp, recoveredHp - power);
+    assert.deepEqual(game.profile, profile); assert.equal(game.attackDamage, power);
+  }
+  for (const defense of ['parry', 'perfect', 'dodge', 'wrong']) {
+    const game = new Combat({ species: 'bell', random: () => 0 }); game.components = [lament]; game.start(); game.attack(0);
+    const hit = game.sequence[0];
+    if (defense === 'dodge') game.dodge(hit.at - 1);
+    else if (defense === 'wrong') { game.tap(hit.at, 'left'); game.release(hit.at, 'left'); }
+    else parry(game, hit.at + (defense === 'parry' ? 100 : 0), hit);
+    game.update(game.endAt);
+    assert.equal(game.hp, 5); assert.equal(game.weakenedAttacks, defense === 'wrong' ? 2 : 0);
+    assert.equal(game.hits, defense === 'wrong' ? 1 : 0);
+  }
+  for (const ending of ['start', 'won', 'lost']) {
+    const game = new Combat({ species: 'bell', random: () => 0, profile: { hp: 1 } });
+    game.components = [lament]; game.start(); game.attack(0); missTurn(game);
+    if (ending === 'start') game.start();
+    if (ending === 'won') game.damageBoss(game.bossHp);
+    if (ending === 'lost') { game.components = [BELL_ATTACK_COMPONENTS[0]]; game.attack(game.time + 1); missTurn(game); }
+    assert.equal(game.weakenedAttacks, 0, `Clear on ${ending}`);
+  }
+  const first = new Combat({ species: 'bell', profile: { hp: 3, firstStrikeBonus: 2 }, random: () => 0 });
+  first.components = [lament]; first.start(); first.heal(0); missTurn(first);
+  assert.equal(first.nextAttackDamage(), 1.5, 'First-strike bonus is included before the multiplier');
+  const hp = first.bossHp; first.attack(first.time + 1); assert.equal(first.bossHp, hp - 1.5);
+  assert.equal(first.nextAttackDamage(), .5, 'Bonus is spent only once');
+  assert.equal(new Combat({ enemy: 'elite', profile: first.profile }).weakenedAttacks, 0);
+});
+
+test('a fully perfect turn counters once with scaled damage, then returns the player turn after its animation', () => {
+  for (const mode of Object.keys(MODES)) for (const [power, damage] of [[1, 1], [2, 1], [3, 2], [4, 2], [6, 3], [20, 3]]) {
+    const index = ATTACK_COMPONENTS.findIndex(c => c.type === 'flurry');
+    const rolls = [0, (index + .5) / ATTACK_COMPONENTS.length];
+    const game = new Combat({ mode, bossHp: 100, practiceAttack: 'flurry', random: () => rolls.shift() ?? .9, profile: { attackDamage: power } });
+    game.start(); game.attack(0); game.drain();
+    assert.equal(game.sequence.length, 3);
+    game.sequence[2].guard = 'both';
+    const hp = game.bossHp, round = game.round, attacks = game.attacks;
+    for (const hit of game.sequence) {
+      assert.equal(parry(game, hit.at - MODES[mode].perfect, hit), 'perfect');
+      assert.equal(game.bossHp, hp, 'even the final early parry must wait for the enemy turn to finish');
+    }
+    game.update(game.endAt - 1); assert.equal(game.counters, 0);
+    game.update(game.endAt);
+    assert.equal(game.state, 'counter'); assert.equal(game.counters, 1);
+    assert.equal(game.counterDamage(), damage); assert.equal(game.bossHp, hp - damage);
+    assert.equal(game.attackAt, game.endAt);
+    assert.deepEqual(game.drain().filter(e => e.type === 'counter'), [{ type: 'counter', at: game.endAt, damage, strikes: 3 }]);
+    assert.equal(game.attack(game.time), false); assert.equal(game.heal(game.time), false);
+    assert.equal(game.dodge(game.time), 'inactive'); assert.equal(game.tap(game.time, 'left'), 'inactive');
+    game.update(game.time); // A paused clock cannot repeat or complete the counter.
+    game.update(game.attackAt + COUNTER_MS - 1); assert.equal(game.state, 'counter');
+    assert.equal(game.bossHp, hp - damage); assert.equal(game.counters, 1);
+    assert.equal(game.round, round); assert.equal(game.attacks, attacks);
+    game.update(game.attackAt + COUNTER_MS); assert.equal(game.state, 'player');
+    assert.deepEqual(game.drain().map(e => e.type), ['turn']);
+    assert.ok(game.attack(game.time + 1)); assert.equal(game.round, round + 1);
+    game.start(); assert.equal(game.counters, 0); assert.equal(game.attackAt, -Infinity);
+  }
+});
+
+test('mixed defenses cannot counter; counters preserve first-strike bonuses and can trigger phase changes or victory', () => {
+  for (const mode of Object.keys(MODES)) for (const exception of ['parry', 'dodge', 'miss']) {
+    const index = ATTACK_COMPONENTS.findIndex(c => c.type === 'flurry');
+    const rolls = [0, (index + .5) / ATTACK_COMPONENTS.length];
+    const game = new Combat({ mode, practiceAttack: 'flurry', random: () => rolls.shift() ?? .9 });
+    game.start(); game.attack(0); const hp = game.bossHp;
+    for (const [i, hit] of game.sequence.entries()) {
+      if (i !== 1) assert.equal(parry(game, hit.at, hit), 'perfect');
+      else if (exception === 'parry') assert.equal(parry(game, hit.at + MODES[mode].perfect + 1, hit), 'parry');
+      else if (exception === 'dodge') { game.dodge(hit.at); game.update(hit.at); }
+    }
+    game.update(game.endAt);
+    assert.equal(game.state, 'player'); assert.equal(game.bossHp, hp); assert.equal(game.counters, 0);
+    assert.ok(!game.drain().some(e => e.type === 'counter'));
+    // Success on a later turn must not inherit the previous failed condition.
+    game.attack(game.time + 1);
+    for (const hit of game.sequence) parry(game, hit.at, hit);
+    game.update(game.endAt); assert.equal(game.counters, 1);
+  }
+  const healed = new Combat({ random: () => 0, profile: { hp: 3, firstStrikeBonus: 2 } });
+  healed.start(); healed.heal(0);
+  for (const hit of healed.sequence) parry(healed, hit.at, hit);
+  healed.update(healed.endAt);
+  assert.equal(healed.bossHp, 29); assert.equal(healed.attacks, 0);
+  assert.equal(healed.potions, 1); assert.equal(healed.round, 1);
+  healed.update(healed.time + COUNTER_MS); healed.attack(healed.time + 1);
+  assert.equal(healed.bossHp, 26, 'first direct attack still receives the relic bonus');
+  for (const enemy of ['normal', 'elite', 'boss']) {
+    const game = new Combat({ enemy, bossHp: 4, random: () => 0 });
+    game.start(); game.attack(0); game.drain();
+    parry(game, game.nextHit().at); game.update(game.endAt);
+    assert.equal(game.bossHp, 2); assert.equal(game.phase, enemy === 'normal' ? 1 : 2);
+    assert.equal(game.drain().filter(e => e.type === 'phase').length, enemy === 'normal' ? 0 : 1);
+    game.update(game.time + COUNTER_MS); game.attack(game.time + 1);
+    parry(game, game.nextHit().at); game.update(game.endAt);
+    assert.equal(game.state, 'won'); assert.equal(game.bossHp, 0);
+    assert.equal(game.drain().filter(e => e.type === 'won').length, 1);
+    game.update(game.time + 10000); assert.equal(game.drain().length, 0);
+    assert.equal(game.counters, 2);
+  }
+});
 
 test('dodge immunity covers every attack at impact, lasts just longer than parry, and cannot erase a late hit', () => {
   assert.equal(DODGE_EXTRA_MS, 70);
@@ -273,9 +517,11 @@ test('400 composed battles can be cleared without damage, with all components av
           if (game.state === 'won') break;
         }
         if (game.state !== 'won') game.update(now = game.endAt);
+        if (game.state === 'counter') game.update(now += COUNTER_MS);
       }
       assert.equal(game.state, 'won');
-      assert.equal(game.round, 30, 'thirty direct attacks at damage 1 deplete 30 HP');
+      assert.equal(game.round, 15, 'fifteen direct attacks and fifteen perfect counters deplete 30 HP');
+      assert.equal(game.counters, 15);
       assert.equal(game.bossHp, 0);
       assert.equal(game.hits, 0);
       assert.equal(game.parries, game.perfects);
@@ -628,7 +874,8 @@ test('two-hand parries require overlapping fresh presses within 80ms, with BOTH 
       game.update(game.endAt);
       assert.equal(game.hits, scenario.ok ? 0 : 1, JSON.stringify({ mode, first, scenario }));
       assert.equal(game.parries, scenario.ok ? 1 : 0);
-      assert.equal(game.bossHp, 29);
+      const perfect = scenario.ok && Math.max(Math.abs(scenario.a), Math.abs(scenario.b)) <= MODES[mode].perfect;
+      assert.equal(game.bossHp, perfect ? 28 : 29);
     }
   }
 });
