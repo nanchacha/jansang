@@ -326,11 +326,12 @@ export function poseCharacter(character, pose, now) {
     const foot = pose.feet?.[hand];
     const forward = foot ? foot.forward : (hand === 'left' ? 1 : -1) * (.1 + pose.step);
     const down = Math.max(foot ? .35 : .7, baseHeight - .14 - (foot?.lift || 0));
-    const length = Math.min(1.198, Math.hypot(down, forward));
+    const lateral = foot?.lateral || 0, legDown = Math.hypot(down, lateral);
+    const length = Math.min(1.198, Math.hypot(legDown, forward));
     const angle = Math.acos(THREE.MathUtils.clamp((.62 ** 2 + length ** 2 - .58 ** 2) / (2 * .62 * length), -1, 1));
-    hip.rotation.x = -Math.atan2(forward, down) - angle;
+    hip.rotation.set(-Math.atan2(forward, legDown) - angle, 0, Math.atan2(lateral, down), 'ZXY');
     knee.rotation.x = Math.PI - Math.acos(THREE.MathUtils.clamp((.62 ** 2 + .58 ** 2 - length ** 2) / (2 * .62 * .58), -1, 1));
-    ankle.rotation.x = -hip.rotation.x - knee.rotation.x;
+    ankle.rotation.set(-hip.rotation.x - knee.rotation.x, 0, -hip.rotation.z, 'XYZ');
   }
   if (character.hound) {
     neck.rotation.x = -pose.lean * .85 - .06;

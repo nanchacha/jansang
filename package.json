@@ -5,6 +5,6 @@
   "scripts": {
     "build": "node scripts/build-static.mjs",
     "start": "node server.mjs",
-    "test": "node --test combat.test.mjs audio.test.mjs fighters3d.test.mjs expedition.test.mjs scripts/build-static.test.mjs"
+    "test": "node --test combat.test.mjs cards.test.mjs audio.test.mjs fighters3d.test.mjs expedition.test.mjs scripts/build-static.test.mjs"
   }
 }

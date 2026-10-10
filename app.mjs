@@ -1,5 +1,6 @@
 import { Combat, MODES, COOLDOWN, ITEM_USE_MS, TELEGRAPH_MS, WEAKEN_ATTACKS, WEAKEN_MULTIPLIER } from './combat.mjs';
-import { Expedition, NODE_TYPES, RELICS, TRAINING, ROUTES, XP_REWARDS, ACTIVE_ROUTE_COLUMNS } from './expedition.mjs';
+import { Expedition, NODE_TYPES, RELICS, ROUTES, ACTIVE_ROUTE_COLUMNS } from './expedition.mjs';
+import { CARDS } from './cards.mjs';
 import { motionAt, specialIntensityAt, dodgeMotionAt, houndRigPoseAt, HOUND_RECOVERY_MS, bellRigPoseAt, BELL_RECOVERY_MS } from './motion.mjs';
 import { Fighters3D } from './fighters3d.mjs';
 import { CombatAudio } from './audio.mjs';
@@ -84,8 +85,10 @@ function burst(kind) {
 function processEvents() {
   for (const event of game.drain()) {
     switch (event.type) {
-      case 'start': feedback('YOUR TURN', '공격하거나 아이템을 선택하세요', '', 1500); break;
+      case 'start': feedback('YOUR TURN', game.deck ? '공격과 보조 카드를 조합하세요' : '공격하거나 아이템을 선택하세요', '', 1500); openDraft(); break;
       case 'attack': feedbackUntil = 0; audio.play('attack', .55); burst('attack'); break;
+      case 'charge': feedback('CHARGE', `다음 직접 공격 +${game.nextBonus} 준비`, '', 1100); break;
+      case 'card-bonus': feedback(CARDS[event.card].name, `조건 달성 · 다음 직접 공격 +${game.nextBonus}`, '', 1100); break;
       case 'counter':
         feedback('PERFECT COUNTER', `${event.strikes}타 모두 퍼펙트 · 반격 피해 ${event.damage}`, 'counter', 1200);
         audio.play('attack', .72); burst('attack');
@@ -164,7 +167,8 @@ function updateUI() {
   $('item-hint').textContent = `회복약 ×${game.potions}`;
   $('potion-stock').textContent = `${game.potions}개`;
   $('potion-effect').textContent = `생명력 +${game.healAmount} · 최대 ${game.maxHp}칸`;
-  const potionReason = game.mode === 'practice' ? '연습 모드는 생명력이 무제한입니다.'
+  const potionReason = !game.cardsReady() ? '먼저 이번 전투의 공격·보조 카드를 선택하세요.'
+    : game.mode === 'practice' ? '연습 모드는 생명력이 무제한입니다.'
     : game.potions === 0 ? '남은 회복약이 없습니다.'
       : game.hp >= game.maxHp ? '체력이 가득 차 있습니다.' : '';
   $('use-potion').disabled = !playerTurn || paused || Boolean(potionReason);
@@ -172,6 +176,8 @@ function updateUI() {
   Object.values(parryButtons).forEach(button => { button.disabled = !bossTurn || paused; });
   $('dodge').disabled = !bossTurn || paused;
   $('attack-hint').textContent = playerTurn ? `피해 ${game.nextAttackDamage()}${game.weakenedAttacks ? ' · 쇠약' : ''}` : '내 차례';
+  $('attack').querySelector('b').textContent = game.deck && game.round === 0 ? '카드 선택' : CARDS[game.selection.attack]?.base === 'charge' && !game.nextBonus ? '축적' : '공격';
+  if (game.deck && playerTurn && !game.cardsReady()) $('attack-hint').textContent = '공격 1장 + 보조 1장';
   $('attack').classList.toggle('weakened', game.weakenedAttacks > 0);
   $('weaken-status').hidden = game.weakenedAttacks === 0;
   $('weaken-status').textContent = game.weakenedAttacks ? `쇠약 · 피해 −${(1 - WEAKEN_MULTIPLIER) * 100}% · 공격·반격 ${game.weakenedAttacks}회 남음` : '';
@@ -184,6 +190,9 @@ function updateUI() {
   const perfectHits = game.sequence.filter(hit => hit.result === 'perfect').length;
   const counterFailed = game.sequence.some(hit => hit.result && hit.result !== 'perfect');
   $('counter-rule').textContent = `한 턴 모두 PERFECT → 자동 반격 ${game.counterDamage()} 피해${bossTurn ? counterFailed ? ' · 이번 턴 조건 실패' : ` · ${perfectHits}/${game.sequence.length}` : ''}`;
+  if (game.counterDamage() === 0) $('counter-rule').textContent = '강타 사용 · 이번 적 턴의 자동 반격 없음';
+  $('card-turn-note').hidden = !game.deck;
+  $('card-turn-note').textContent = game.cardsReady() && game.deck ? `${CARDS[game.selection.attack].name} + ${CARDS[game.selection.support].name} · 전투 동안 유지${bossTurn && !game.activeCards.attack ? ' · 회복 중 효과 없음' : game.nextBonus ? ` · 다음 공격 +${game.nextBonus} 준비됨` : ''}` : '전투 시작 시 공격·보조 카드를 한 번 선택하세요';
   updateDefenseCooldown(clock());
 }
 
@@ -212,15 +221,15 @@ function start() {
   unlockAudio();
   origin = performance.now(); lastFrame = origin;
   game.start();
-  $('battle-xp').hidden = true;
   particles = []; phaseUntil = 0; flashAt = -Infinity;
   $('overlay').hidden = true;
   $('arena').classList.remove('hit');
   processEvents();
 }
 
-function act(kind) {
-  if (!running() || paused || $('item-dialog').open) return;
+function act(kind, executeCards = false) {
+  if (!running() || paused || $('item-dialog').open || $('card-dialog').open) return;
+  if (kind === 'attack' && game.deck && game.round === 0 && !executeCards) { openDraft(); return; }
   unlockAudio();
   const now = clock();
   if (kind === 'attack') game.attack(now);
@@ -264,12 +273,12 @@ function togglePause() {
     processEvents();
     pausedAt = clock(); paused = true;
     $('item-dialog').close();
+    $('card-dialog').close();
     $('overlay-eyebrow').textContent = 'TAKE A BREATH';
     $('overlay-title').innerHTML = '잠깐의 <em>쉼표.</em>';
     $('overlay-copy').innerHTML = '준비되면, 멈췄던 순간부터 이어갑니다.';
     $('overlay-foot').textContent = '화면을 벗어나면 전투가 자동으로 멈춥니다';
     $('result-stats').hidden = true;
-    $('battle-xp').hidden = true;
     $('intro-emblem').textContent = 'Ⅱ';
     $('start').innerHTML = '전투 계속 <svg><use href="#i-arrow"/></svg>';
     $('overlay').hidden = false;
@@ -280,6 +289,7 @@ function togglePause() {
     $('overlay').hidden = true;
     $('pause').setAttribute('aria-label', '일시 정지');
     unlockAudio();
+    openDraft();
   }
   $('arena').classList.toggle('paused', paused);
   updateUI();
@@ -295,12 +305,10 @@ async function finish(won) {
   $('overlay-copy').innerHTML = nohit ? '한 대도 맞지 않았습니다.<br>모든 순간이 당신의 것이었습니다.' : won ? '공허의 파수꾼을 쓰러뜨렸습니다.<br>다음 목표는 한 대도 맞지 않는 승리.' : '패턴은 달라져도, 빈틈은 있습니다.<br>다음에는 조금 더 정확하게.';
   $('result-stats').innerHTML = `<div><span>전투 시간</span><b>${timeString(game.elapsed)}</b></div><div><span>퍼펙트</span><b>${game.perfects}</b></div><div><span>피격</span><b>${game.hits}</b></div><div><span>회복약 사용</span><b>${game.potionsUsed}회</b></div>`;
   $('result-stats').hidden = false;
-  $('battle-xp').hidden = !expeditionBattle || !won;
-  if (expeditionBattle && won) $('battle-xp').textContent = `+${expedition.lastXpGain} XP 획득 · 보유 ${expedition.xp} XP`;
   $('start').innerHTML = '다시 도전 <svg><use href="#i-retry"/></svg>';
   $('overlay-foot').textContent = game.mode === 'practice' ? '연습 모드 · 최고 기록에 포함되지 않습니다' : '새로운 공격 조합이 기다립니다';
   if (expeditionBattle) {
-    $('start').innerHTML = `${expedition.state === 'reward' ? '희귀 보상 선택' : ['won', 'lost'].includes(expedition.state) ? '원정 결과' : '지도로 돌아가기'} <svg><use href="#i-arrow"/></svg>`;
+    $('start').innerHTML = `${expedition.state === 'card-reward' ? '카드 보상 선택' : expedition.state === 'reward' ? '희귀 보상 선택' : ['won', 'lost'].includes(expedition.state) ? '원정 결과' : '지도로 돌아가기'} <svg><use href="#i-arrow"/></svg>`;
     $('overlay-copy').textContent = won ? `${$('enemy-name').textContent}을 쓰러뜨렸습니다. 남은 체력과 아이템을 가지고 다음 길로 향하세요.` : '이번 원정의 끝입니다. 지나온 길과 기록을 확인하세요.';
     $('overlay-foot').textContent = `원정 누적 피격 ${expedition.stats.hits}회 · 남은 회복약 ${expedition.potions}개`;
   }
@@ -363,30 +371,26 @@ function showMap() {
 function renderExpedition() {
   const run = expedition, available = run.available(), future = run.futureNodes();
   $('expedition-floor').textContent = String(run.node?.floor || 0).padStart(2, '0');
-  $('expedition-status').innerHTML = `<div><span>생명력</span><b>${run.hp} <small>/ ${run.maxHp}</small></b></div><div><span>공격력</span><b>${run.profile.attackDamage} <small>${run.weapon + run.training.power}회 강화</small></b></div><div><span>회복약</span><b>${run.potions} <small>개</small></b></div><div><span>누적 피격</span><b>${run.stats.hits} <small>회</small></b></div>`;
-  $('xp-balance').textContent = run.xp;
-  const canUpgrade = Object.keys(TRAINING).some(id => run.canTrain(id));
-  $('training-panel').classList.toggle('has-upgrade', canUpgrade);
-  $('training-ready').textContent = canUpgrade ? '강화 가능' : '경험치로 능력 성장';
-  $('training-feedback').textContent = '';
-  $('training-options').innerHTML = Object.entries(TRAINING).map(([id, option]) => {
-    const cost = run.trainingCost(id);
-    const capped = cost === null;
-    const effect = id === 'power' ? `공격력 ${run.profile.attackDamage} → ${run.profile.attackDamage + 1}` : `최대 체력 ${run.maxHp} → ${run.maxHp + 1} · 현재 체력 +1`;
-    const status = capped ? '최대 강화' : ['won', 'lost'].includes(run.state) ? '원정 종료' : run.state !== 'map' ? '다음 길 선택 시 강화 가능' : run.xp < cost ? `${cost - run.xp} XP 부족` : '강화하기';
-    return `<button class="training-option" data-training="${id}" ${run.canTrain(id) ? '' : 'disabled'}><span class="training-icon" aria-hidden="true">${option.icon}︎</span><span><b>${option.name} <small>${run.training[id]} / ${option.costs.length}</small></b><span>${capped ? '최대치에 도달했습니다' : effect}</span><small>${status}</small></span><strong>${capped ? 'MAX' : `${cost} XP`}</strong></button>`;
-  }).join('');
-  const routes = ROUTES.map((route, column) => ({ ...route, column })).filter(route => ACTIVE_ROUTE_COLUMNS.includes(route.column));
-  for (const id of ['route-cards', 'map-route-headings']) $(id).classList.toggle('single-route', routes.length === 1);
-  $('route-cards').innerHTML = routes.map(route => {
-    const { column } = route;
-    const nodes = run.nodes.filter(n => n.column === column || n.type === 'boss');
-    const count = type => nodes.filter(n => n.type === type).length;
-    const battles = nodes.filter(n => XP_REWARDS[n.type]).length;
-    const xp = nodes.reduce((sum, n) => sum + (XP_REWARDS[n.type] || 0), 0);
-    return `<article class="route-card route-${column}"><h3><span aria-hidden="true">0${column + 1}</span>${route.name}</h3><p>${route.description}</p><b>전투 ${battles} · 정예 ${count('elite')} 포함</b><span>휴식 ${count('rest')} · 보물 ${count('treasure')}</span><strong>${xp} XP · 희귀 보상 ${count('elite')}회</strong></article>`;
-  }).join('');
-  $('map-route-headings').innerHTML = routes.map(route => `<span class="route-${route.column}">${route.name}</span>`).join('');
+  const vitality = $('expedition-vitality');
+  vitality.style.setProperty('--health-fill', `${run.hp / run.maxHp * 100}%`);
+  vitality.classList.toggle('low-health', run.hp / run.maxHp <= .4);
+  vitality.setAttribute('aria-valuemax', run.maxHp);
+  vitality.setAttribute('aria-valuenow', run.hp);
+  vitality.title = `생명력 ${run.hp} / ${run.maxHp}`;
+  $('expedition-hp').innerHTML = `${run.hp} <small>/ ${run.maxHp}</small>`;
+  $('expedition-damage').textContent = run.profile.attackDamage;
+  $('expedition-forging').textContent = `${run.weapon}회 강화`;
+  $('expedition-potion-count').textContent = `×${run.potions}`;
+  $('expedition-potions').classList.toggle('empty-stock', run.potions === 0);
+  $('expedition-hit-count').textContent = run.stats.hits;
+  for (const [id, label] of [
+    ['expedition-power', `공격력 ${run.profile.attackDamage} · ${run.weapon}회 강화`],
+    ['expedition-potions', `회복약 ${run.potions}개`],
+    ['expedition-hits', `누적 피격 ${run.stats.hits}회`],
+  ]) {
+    $(id).setAttribute('aria-label', label);
+    $(id).title = label;
+  }
   const edges = run.nodes.flatMap(node => node.next.map(id => {
     const next = run.nodes.find(n => n.id === id);
     const travelled = run.visited.includes(node.id) && (run.visited.includes(id) || id === run.current);
@@ -403,26 +407,33 @@ function renderExpedition() {
   }).join('') + '<div class="map-origin">출발 · 당신의 길을 선택하세요</div>';
   $('map-legend').innerHTML = Object.entries(NODE_TYPES).map(([id, type]) => `<span class="${id}"><i aria-hidden="true">${type.icon}︎</i>${type.name}</span>`).join('');
   $('expedition-relics').innerHTML = run.relics.length ? run.relics.map(item => `<div class="owned-relic"><i aria-hidden="true">${RELICS[item.id].icon}︎</i><div><b>${item.rare ? '희귀 · ' : ''}${RELICS[item.id].name}</b><p>${RELICS[item.id].describe(item.rare)}</p></div></div>`).join('') : '<p class="empty-relics">아직 가져온 유물이 없습니다.<br>보물상자와 정예 전투에서 발견하세요.</p>';
+  $('deck-count').textContent = `${run.deck.length}장`;
+  $('deck-list').innerHTML = [...new Set(run.deck)].map(id => `<div><svg aria-hidden="true"><use href="#${CARDS[id].icon}"/></svg><span><b>${CARDS[id].name} <small>×${run.deck.filter(card => card === id).length}</small></b><p>${CARDS[id].text}</p></span></div>`).join('');
   const card = $('journey-card');
+  card.hidden = !['rest', 'reward', 'card-reward', 'won', 'lost'].includes(run.state);
   const choice = (id, icon, title, copy, disabled = false) => `<button class="journey-choice" data-choice="${id}" ${disabled ? 'disabled' : ''}><i aria-hidden="true">${icon}︎</i><span><b>${title}</b><small>${copy}</small></span><span aria-hidden="true">↗</span></button>`;
   if (run.state === 'rest') {
     card.innerHTML = `<span class="overline">A MOMENT OF RESPITE</span><h2>꺼지지 않은 불씨</h2><p>잠시 숨을 고르세요.<br>이번 휴식에서 한 가지만 선택할 수 있습니다.</p><div class="journey-choices">${choice('heal', '✚', '상처 돌보기', run.hp === run.maxHp ? '생명력이 이미 가득 찼습니다' : `생명력 +2 · ${run.hp} → ${Math.min(run.maxHp, run.hp + 2)}`, run.hp === run.maxHp)}${choice('weapon', '⚔', '무기 벼리기', run.weapon >= 2 ? '최대 강화에 도달했습니다' : `공격력 +1 · ${run.profile.attackDamage} → ${run.profile.attackDamage + 1}`, run.weapon >= 2)}${choice('vitality', '◇', '생명력 단련', run.maxHp >= 7 ? '최대 생명력에 도달했습니다' : `최대 생명력 ${run.maxHp} → ${run.maxHp + 1} · 현재 체력 +1`, run.maxHp >= 7)}</div><button class="journey-skip" data-choice="leave">선택 없이 떠나기</button>`;
+  } else if (run.state === 'card-reward') {
+    const upgrades = run.upgradableCards();
+    card.innerHTML = `<span class="overline">VICTORY / CHOOSE ONE REWARD</span><h2>새로운 수, 더 강한 수</h2><p>카드 획득 또는 카드 강화 중 하나만 받을 수 있습니다.${run.node.type === 'elite' ? '<br>획득·강화를 마치면 희귀 유물도 선택합니다.' : run.node.type === 'boss' ? '<br>획득·강화를 마치면 원정이 완료됩니다.' : ''}</p>
+      <details class="card-reward-path" name="victory-reward"><summary>새 카드 1장 획득 <small>후보 3장 중 선택 · 덱 +1장</small></summary><div class="card-rewards">${run.cardOffers.map(id => `<button class="combat-card ${CARDS[id].kind}" data-card-reward="${id}">${cardFace(id)}<em>${run.deck.includes(id) ? `일반 등급 보유 ${run.deck.filter(card => card === id).length}장 → +1장` : '일반 등급 · 덱에 추가'}</em></button>`).join('')}</div></details>
+      <details class="card-reward-path" name="victory-reward"><summary>보유 카드 1장 강화 <small>${upgrades.length ? '한 장을 +등급으로 · 덱 장수 유지' : '모든 보유 카드가 강화되었습니다'}</small></summary>${upgrades.length ? `<p class="choice-foot">원하는 카드의 강화 후 효과를 확인하세요. 같은 카드가 여러 장이면 그중 한 장만 강화합니다.</p><div class="card-rewards">${upgrades.map(id => `<button class="combat-card ${CARDS[id].kind}" data-card-upgrade="${id}">${cardFace(id + '+')}<em>현재: ${CARDS[id].text}<br>이 카드 1장 강화</em></button>`).join('')}</div>` : '<p class="choice-foot">카드는 한 번만 강화할 수 있습니다. 새 카드 획득을 선택하세요.</p>'}</details>
+      <p class="choice-foot">목록 열기·닫기는 보상을 소모하지 않습니다.<br>카드는 한 장당 1회 강화 · 새 원정에서 초기화됩니다.</p>`;
   } else if (run.state === 'reward') {
     const rare = run.offers[0]?.rare;
     card.innerHTML = `<span class="overline">${rare ? 'ELITE REWARD' : 'A FORGOTTEN TREASURE'}</span><h2>${rare ? '강적이 남긴 유산' : '잊힌 자의 보물'}</h2><p>${rare ? '정예를 꺾은 대가로 더 강한 보상을 얻습니다.' : '길을 지켜온 유물이 당신을 기다립니다.'}<br>보상 하나를 선택하세요.</p><div class="journey-choices">${run.offers.map(item => choice(item.id, RELICS[item.id].icon, `${item.rare ? '희귀 · ' : ''}${RELICS[item.id].name}`, RELICS[item.id].describe(item.rare))).join('')}</div><span class="choice-foot">유물은 이번 원정이 끝날 때까지 적용됩니다.</span>`;
   } else if (['won', 'lost'].includes(run.state)) {
     const won = run.state === 'won';
-    card.innerHTML = `<span class="overline">${won && run.stats.hits === 0 ? 'A FLAWLESS EXPEDITION' : won ? 'EXPEDITION COMPLETE' : 'THE JOURNEY ENDS'}</span><h2>${won ? '공허를 넘어서' : '다음 길은 다를 거예요'}</h2><p>${won ? run.stats.hits === 0 ? '전 원정 무피격 달성. 모든 순간을 막아냈습니다.' : '공허의 파수꾼을 쓰러뜨리고 원정을 완주했습니다.' : `${run.node.floor}번째 지점에서 쓰러졌습니다. 새 원정에서는 경험치와 강화가 초기화됩니다.`}</p><dl class="journey-results"><div><dt>완료한 지점</dt><dd>${run.visited.length} / 10</dd></div><div><dt>승리한 전투</dt><dd>${run.stats.battles}회</dd></div><div><dt>전투 시간</dt><dd>${timeString(run.stats.elapsed)}</dd></div><div><dt>피격 / 퍼펙트</dt><dd>${run.stats.hits} / ${run.stats.perfects}</dd></div><div><dt>회복약 사용</dt><dd>${run.stats.potionsUsed}회</dd></div><div><dt>획득 경험치 / 남은 경험치</dt><dd>${run.stats.xpEarned} / ${run.xp} XP</dd></div></dl><button class="new-expedition" data-new-run>새로운 원정 시작 <span>↗</span></button>`;
+    card.innerHTML = `<span class="overline">${won && run.stats.hits === 0 ? 'A FLAWLESS EXPEDITION' : won ? 'EXPEDITION COMPLETE' : 'THE JOURNEY ENDS'}</span><h2>${won ? '공허를 넘어서' : '다음 길은 다를 거예요'}</h2><p>${won ? run.stats.hits === 0 ? '전 원정 무피격 달성. 모든 순간을 막아냈습니다.' : '공허의 파수꾼을 쓰러뜨리고 원정을 완주했습니다.' : `${run.node.floor}번째 지점에서 쓰러졌습니다. 새 원정에서는 체력과 아이템, 강화가 초기화됩니다.`}</p><dl class="journey-results"><div><dt>완료한 지점</dt><dd>${run.visited.length} / 10</dd></div><div><dt>승리한 전투</dt><dd>${run.stats.battles}회</dd></div><div><dt>전투 시간</dt><dd>${timeString(run.stats.elapsed)}</dd></div><div><dt>피격 / 퍼펙트</dt><dd>${run.stats.hits} / ${run.stats.perfects}</dd></div><div><dt>회복약 사용</dt><dd>${run.stats.potionsUsed}회</dd></div></dl><button class="new-expedition" data-new-run>새로운 원정 시작 <span>↗</span></button>`;
   } else {
-    const direction = !run.current ? routes.length === 1 ? `${routes[0].name}에서 원정을 시작하세요. 빛나는 출발점을 눌러 이동합니다.` : '출발점 중 하나를 선택하세요. 위의 경로 안내에서 위험과 보상을 비교할 수 있습니다.' : available.length > 1 ? '갈림길입니다. 직진하거나 연결된 옆길로 이동하세요. 옮겨간 뒤에는 원래 길로 돌아올 수 없습니다.' : '외길 구간입니다. 빛나는 다음 지점으로만 이동할 수 있습니다.';
-    card.innerHTML = `<span class="overline">CHOOSE YOUR NEXT STEP</span><h2>${run.current ? ROUTES[run.node.column]?.name || '다음 길을 고르세요' : routes.length === 1 ? routes[0].name : '당신의 길을 선택하세요'}</h2><p>${direction}</p><ol class="journey-rules"><li><b>전투</b><span>빛나는 팔과 무기를 읽고 방향에 맞춰 패링하세요.</span></li><li><b>휴식</b><span>회복, 무기 강화, 생명력 단련 중 하나를 선택하세요.</span></li><li><b>보물</b><span>유물과 회복약으로 마지막 전투를 준비하세요.</span></li></ol><div class="route-tip">${run.current ? routes.length === 1 ? '길을 따라 마지막 지점의 보스에게 도전하세요.' : '흐릿해진 지점은 선택한 경로에서 접근할 수 없습니다.' : '시련의 길은 휴식이 없는 대신, 정예 승리 보상 3회를 보장합니다.'}</div>`;
+    card.replaceChildren();
   }
 }
 
 $('map-canvas').addEventListener('click', event => {
   const id = event.target.closest('[data-node]')?.dataset.node;
   if (!id || !expedition.enter(id)) return;
-  $('route-guide').open = false;
   if (expedition.state === 'battle') {
     game = expedition.battle;
     expeditionBattle = true;
@@ -430,13 +441,21 @@ $('map-canvas').addEventListener('click', event => {
     $('battle-view').hidden = false;
     resize(); start();
     $('arena').scrollIntoView({ block: 'start' });
-    $('attack').focus({ preventScroll: true });
+    if (!$('card-dialog').open) $('attack').focus({ preventScroll: true });
   } else {
     renderExpedition();
     $('journey-card').focus();
   }
 });
 $('journey-card').addEventListener('click', event => {
+  const reward = event.target.closest('[data-card-reward], [data-card-upgrade]');
+  const cardId = reward?.dataset.cardReward ?? reward?.dataset.cardUpgrade;
+  if (cardId && expedition.claimCard(cardId, reward.hasAttribute('data-card-upgrade'))) {
+    renderExpedition();
+    if (expedition.state === 'map') focusRoute();
+    else $('journey-card').focus();
+    return;
+  }
   if (event.target.closest('[data-new-run]')) {
     expedition = new Expedition(); renderExpedition(); focusRoute();
     return;
@@ -446,15 +465,21 @@ $('journey-card').addEventListener('click', event => {
   const changed = expedition.state === 'rest' ? expedition.rest(id) : expedition.claim(id);
   if (changed) { renderExpedition(); focusRoute(); }
 });
-$('training-options').addEventListener('click', event => {
-  const id = event.target.closest('[data-training]')?.dataset.training;
-  if (!id || !expedition.train(id)) return;
-  renderExpedition();
-  $('training-feedback').textContent = `${TRAINING[id].name} 완료 · ${id === 'power' ? `공격력 ${expedition.profile.attackDamage}` : `생명력 ${expedition.hp} / ${expedition.maxHp}`} · 남은 ${expedition.xp} XP`;
-  const button = $('training-options').querySelector(`[data-training="${id}"]`);
-  (button.disabled ? $('training-toggle') : button).focus({ preventScroll: true });
-});
 $('locate-node').addEventListener('click', locateNode);
+$('enter-game').addEventListener('click', async () => {
+  $('enter-game').disabled = true;
+  unlockAudio();
+  $('game-app').hidden = false;
+  $('game-app').inert = true;
+  locateNode();
+  await $('title-screen').animate([{ opacity: 1 }, { opacity: 0 }], {
+    duration: reducedMotion ? 0 : 650, easing: 'ease-out', fill: 'forwards',
+  }).finished;
+  $('title-screen').hidden = true;
+  $('game-app').inert = false;
+  $('show-map').focus({ preventScroll: true });
+}, { once: true });
+$('enter-game').disabled = false;
 $('show-map').addEventListener('click', showMap);
 $('show-solo').addEventListener('click', () => {
   if (running() || !$('death-screen').hidden) return;
@@ -470,18 +495,61 @@ $('show-solo').addEventListener('click', () => {
   $('overlay-copy').textContent = '빛나는 팔과 무기를 읽고 모든 공격을 막아내세요.';
   $('overlay-foot').textContent = '아래에서 연습 모드와 공격 패턴을 선택할 수 있습니다.';
   $('intro-emblem').textContent = '◇'; $('result-stats').hidden = true;
-  $('battle-xp').hidden = true;
   $('start').innerHTML = '전투 시작 <svg><use href="#i-arrow"/></svg>';
   $('overlay').hidden = false;
   resize(); updateUI();
 });
 
 $('start').addEventListener('click', start);
-$('items').addEventListener('click', () => {
+function openItems() {
   if (game.state !== 'player' || paused) return;
+  $('card-dialog').close();
   updateUI();
   $('item-dialog').showModal();
   ($('use-potion').disabled ? $('item-cancel') : $('use-potion')).focus();
+}
+$('items').addEventListener('click', openItems);
+$('card-heal').addEventListener('click', openItems);
+
+function cardFace(id) {
+  const card = CARDS[id];
+  return `<span class="card-kind">${card.kind === 'attack' ? '공격' : '보조'}${id !== card.base ? ' · 강화' : ''}</span><svg aria-hidden="true"><use href="#${card.icon}"/></svg><b>${card.name}</b><span class="card-copy">${card.text}</span>`;
+}
+
+function openDraft() {
+  if (!game.deck || game.round > 0 || game.state !== 'player' || paused || $('item-dialog').open) return;
+  for (const kind of ['attack', 'support']) $(kind + '-cards').innerHTML = game.hand[kind].map(id => `<button class="combat-card ${kind}" data-card="${id}" data-card-kind="${kind}" aria-pressed="false">${cardFace(id)}<em class="card-selection">선택</em></button>`).join('');
+  $('card-round').textContent = `BATTLE LOADOUT / ${game.deck.length} CARDS`;
+  updateDraft();
+  if (!$('card-dialog').open) $('card-dialog').showModal();
+}
+
+function updateDraft() {
+  $('card-dialog').querySelectorAll('[data-card]').forEach(button => {
+    const selected = game.selection[button.dataset.cardKind] === button.dataset.card;
+    button.setAttribute('aria-pressed', String(selected));
+    button.querySelector('.card-selection').textContent = selected ? '✓ 선택됨' : '선택';
+  });
+  const ready = game.cardsReady(), { attack, support } = game.selection;
+  $('card-execute').disabled = !ready;
+  $('card-execute').textContent = ready ? `선택 확정 · 피해 ${game.nextAttackDamage()}` : '두 장을 선택하세요';
+  $('card-preview').textContent = `${attack ? CARDS[attack].name : '공격 미선택'} + ${support ? CARDS[support].name : '보조 미선택'}${CARDS[attack]?.base === 'heavy' ? ' · 이번 반격 없음' : ''}${game.nextBonus ? ` · 다음 직접 공격 +${game.nextBonus} 준비됨` : ''}`;
+  $('card-heal').textContent = `회복으로 시작 ×${game.potions}`;
+  $('card-heal').disabled = !ready;
+}
+
+$('card-dialog').addEventListener('click', event => {
+  const button = event.target.closest('[data-card]');
+  if (button && game.selectCard(button.dataset.cardKind, button.dataset.card)) { updateDraft(); updateUI(); }
+});
+$('card-cancel').addEventListener('click', () => $('card-dialog').close());
+$('card-dialog').addEventListener('close', () => {
+  if (!paused && game.state === 'player' && !$('item-dialog').open) $('attack').focus({ preventScroll: true });
+});
+$('card-execute').addEventListener('click', () => {
+  if (paused || game.state !== 'player' || !game.cardsReady()) return;
+  $('card-dialog').close();
+  act('attack', true);
 });
 $('item-cancel').addEventListener('click', () => $('item-dialog').close());
 $('item-dialog').addEventListener('close', () => {
@@ -558,7 +626,7 @@ activeModes.forEach(button => button.addEventListener('click', () => {
 }));
 document.addEventListener('keydown', event => {
   // The native dialog owns focus and Escape; shortcuts must not spend a turn behind it.
-  if ($('item-dialog').open) return;
+  if ($('item-dialog').open || $('card-dialog').open) return;
   if (event.repeat || /INPUT|TEXTAREA|SELECT/.test(event.target.tagName)) return;
   if (event.code === 'Escape') { togglePause(); return; }
   if (['KeyJ', 'KeyA', 'KeyD', 'KeyK'].includes(event.code)) {
@@ -952,7 +1020,7 @@ function drawScene(now) {
         for (let claw = -1; claw <= 1; claw++) {
           const offset = claw * 9 * scale;
           ctx.beginPath(); ctx.moveTo(x + offset, y);
-          ctx.quadraticCurveTo(x + direction * 35 * scale, y + 35 * scale + offset, playerX + offset, playerGuardY + 20 * scale + offset);
+          ctx.quadraticCurveTo(x + direction * 85 * scale, y + 48 * scale + offset, playerX + offset, playerGuardY + 20 * scale + offset);
           ctx.strokeStyle = '#dcc9a1'; ctx.lineWidth = 1.8; ctx.stroke();
         }
       }
@@ -998,7 +1066,7 @@ function drawScene(now) {
     $('timing-caption').textContent = healProgress >= 0 && healProgress < 1 ? '회복 중 · 곧 보스가 반격합니다' : parryWindow ? '패링! 회피는 닿기 직전에' : rangedCaption || (warning ? `${hit.name} · 빛나는 무기를 보세요` : windup && remaining ? '빛나는 팔과 무기를 읽고 기다리세요' : remaining ? '보스가 공격을 준비합니다' : '공격을 피했다면, 다음 빈틈을 노리세요');
     $('timing-caption').style.color = parryWindow ? '#f6dfa1' : hit?.launchAt != null ? '#a5dfff' : hit?.type === 'fury' ? '#edb098' : '#b3c0a7';
   } else {
-    $('timing-caption').textContent = game.state === 'player' ? '공격하거나 아이템을 선택하세요.' : game.state === 'counter' ? '자동 반격 중 · 곧 당신의 차례입니다' : '';
+    $('timing-caption').textContent = game.state === 'player' ? game.deck && game.round === 0 ? '이번 전투에 사용할 카드를 선택하세요.' : '공격하거나 아이템을 선택하세요.' : game.state === 'counter' ? '자동 반격 중 · 곧 당신의 차례입니다' : '';
     $('timing-caption').style.color = '#b3c0a7';
   }
 }

@@ -9,10 +9,12 @@ if (dirname(output) !== resolve(root)) throw new Error('Build output must stay i
 await rm(output, { recursive: true, force: true });
 const files = [
   'index.html', 'style.css', 'app.mjs', 'combat.mjs', 'expedition.mjs',
-  'motion.mjs', 'audio.mjs', 'fighters3d.mjs',
+  'motion.mjs', 'audio.mjs', 'fighters3d.mjs', 'cards.mjs',
   'vendor/three/three.module.min.js', 'vendor/three/three.core.min.js',
   'vendor/three/LICENSE',
   'assets/concepts/hollow-warden-v1.png', 'assets/concepts/protagonist-v1.png',
+  'assets/concepts/title-pilgrimage-v1.png',
+  'assets/ui/status-items-v1.png',
   ...SOUND_FILES,
 ];
 for (const file of files) {

@@ -96,7 +96,7 @@ export function houndRigPoseAt(hit, now, reduced = false, hurtAt = -Infinity) {
   const pose = { crouch: .4 + .08 * recoil, lean: .96 - .4 * recoil, twist: Math.sin(t * 1.4) * .04,
     roll: 0, step: .1, lift: 0, breath: Math.sin(t * 2.7) * .018, cloth: .12,
     jaw: .13 + .28 * recoil, ears: .12 + .45 * recoil, tail: Math.sin(t * 2.1) * .2,
-    travel: { x: 0, y: 0, depth: 1 }, feet: { left: { forward: .18, lift: 0 }, right: { forward: -.18, lift: 0 } }, arms: {} };
+    travel: { x: 0, y: 0, depth: 1 }, feet: { left: { forward: .18, lift: 0, lateral: 0 }, right: { forward: -.18, lift: 0, lateral: 0 } }, arms: {} };
   for (const hand of ['left', 'right']) {
     const side = hand === 'left' ? -1 : 1;
     pose.arms[hand] = { raise: -.7, turn: 0, spread: side * .25, elbow: -.95, wrist: -.3, curl: .12 };
@@ -110,6 +110,8 @@ export function houndRigPoseAt(hit, now, reduced = false, hurtAt = -Infinity) {
   const p = load * (1 - drive) * recover, s = cut * recover, d = drive * recover;
   const air = Math.sin(drive * Math.PI) ** 2 * recover;
   const side = hit.hand === 'left' ? -1 : 1;
+  const sidestep = Math.sin(load * Math.PI) ** 2 * (1 - drive) * recover;
+  const follow = Math.sin(unit((now - hit.at) / HOUND_RECOVERY_MS) * Math.PI) ** 2;
   const feint = hit.tempo === 'feint' && now < hit.commitAt
     ? Math.sin(unit((now - hit.windupAt) / (hit.commitAt - hit.windupAt)) * Math.PI) ** 2 : 0;
   pose.jaw += .12 * p + .45 * s; pose.ears += .2 * p + .4 * d;
@@ -137,9 +139,9 @@ export function houndRigPoseAt(hit, now, reduced = false, hurtAt = -Infinity) {
         arm.turn = direction * (-.35 * p + .9 * s); arm.wrist += .2 * p - .65 * s;
         break;
       default:
-        arm.raise += -.6 * p - .25 * s; arm.elbow += -.25 * p + .55 * s;
-        arm.turn = direction * (-.45 * p + .95 * s);
-        arm.spread += direction * (.65 * p - .15 * s); arm.wrist -= .6 * s;
+        arm.raise += -.7 * p - .4 * s; arm.elbow += -.3 * p + .65 * s;
+        arm.turn = direction * (-.6 * p + 1.25 * s);
+        arm.spread += direction * (.9 * p - .05 * s); arm.wrist -= .7 * s;
         break;
     }
   }
@@ -155,7 +157,9 @@ export function houndRigPoseAt(hit, now, reduced = false, hurtAt = -Infinity) {
       const retreat = hit.type === 'hound-rebound';
       pose.crouch += .13 * p - .22 * air + .08 * s; pose.lean += .2 * p - .35 * air;
       pose.lift = (retreat ? .95 : 1.25) * air;
-      pose.travel = { x: (retreat ? 105 : 12) * p - 140 * d, y: 24 * d, depth: 1 - (retreat ? .16 : 0) * p + .08 * s };
+      pose.twist += side * (.22 * p - .32 * s); pose.roll = side * (.16 * p - .22 * air);
+      pose.travel = { x: (retreat ? 155 + side * 45 : side * 100) * p - 140 * d - side * 32 * s,
+        y: (retreat ? -22 : -12) * p + 24 * d, depth: 1 - (retreat ? .16 : .06) * p + .08 * s };
       pose.feet.left = { forward: .18 - .3 * air, lift: .36 * air };
       pose.feet.right = { forward: -.18 - .18 * air, lift: .28 * air };
       break;
@@ -168,28 +172,41 @@ export function houndRigPoseAt(hit, now, reduced = false, hurtAt = -Infinity) {
       break;
     case 'hound-scoop':
       pose.crouch += .13 * p + .09 * s; pose.lean += .14 * p;
-      pose.twist += side * (.3 * p - .7 * s); pose.roll = side * (.09 * p - .1 * s);
-      pose.travel = { x: side * 16 * p - 60 * d, y: 8 * s, depth: 1 + .04 * s };
+      pose.twist += side * (.38 * p - .85 * s); pose.roll = side * (.18 * p - .2 * s);
+      pose.travel = { x: side * (105 * p - 65 * s) - 55 * d, y: -12 * p + 8 * s, depth: 1 - .06 * p + .04 * s };
       pose.feet[hit.hand].forward += .32 * s;
       break;
     case 'hound-flurry':
       pose.crouch += .07 * p - .14 * s; pose.lean -= .2 * s;
-      pose.twist += side * (.4 * p - .68 * s); pose.roll = side * (.13 * p - .17 * s);
-      pose.travel = { x: side * (36 * p - 38 * s) - 36 * d, y: 6 * s, depth: 1 + .045 * s };
+      pose.twist += side * (.5 * p - .92 * s); pose.roll = side * (.22 * p - .28 * s);
+      pose.travel = { x: side * (150 * p - 85 * s - 28 * follow) - 75 * d, y: -16 * p + 16 * s, depth: 1 - .09 * p + .06 * s };
       pose.feet[hit.hand] = { forward: (hit.hand === 'left' ? .18 : -.18) + .25 * s, lift: .16 * air };
       break;
     case 'hound-feint':
       pose.lean -= .28 * feint + .12 * s;
-      pose.twist += side * (-.25 * p + .45 * s + .5 * feint); pose.roll = side * .18 * feint;
-      pose.travel = { x: side * (-32 * p + 34 * feint) - 85 * d, y: 8 * s, depth: 1 + .06 * s };
+      pose.twist += side * (.28 * p - .7 * s - .55 * feint); pose.roll = side * (.18 * p - .3 * feint - .2 * s);
+      pose.travel = { x: side * (125 * p - 170 * feint - 32 * s) - 105 * d, y: -14 * p + 8 * s, depth: 1 - .08 * p + .06 * s };
       pose.feet[hit.hand].forward += .3 * s;
       break;
     default:
-      pose.twist += side * (.28 * p - .6 * s + .24 * feint); pose.roll = side * .12 * s;
+      pose.twist += side * (.48 * p - .9 * s); pose.roll = side * (.2 * p - .26 * s);
       pose.lean -= .15 * s; pose.crouch += .08 * p;
-      pose.travel = { x: side * (20 * p - 14 * s + 32 * feint) - 34 * d, y: 5 * s, depth: 1 + .035 * s };
+      pose.travel = { x: side * (155 * p - 78 * s - 35 * follow) - 72 * d, y: -18 * p + 12 * s, depth: 1 - .08 * p + .055 * s };
       pose.feet[hit.hand].forward += .22 * s;
       break;
+  }
+  // Push off sideways, bank into the cut, then catch the weight on the outside
+  // hind paw. This stays on the strike clock, including early successful parries.
+  const flank = ['hound-rake', 'hound-flurry', 'hound-feint', 'hound-scoop'].includes(hit.type);
+  if (flank) {
+    pose.lift += .28 * sidestep + .18 * air;
+    pose.tail += side * (-.55 * p + .8 * s + .35 * follow);
+    pose.cloth += .3 * sidestep + .3 * follow;
+  }
+  for (const hand of ['left', 'right']) {
+    const foot = pose.feet[hand], outside = hand === hit.hand;
+    foot.lateral = flank ? side * (outside ? .3 * p - .2 * s : -.14 * p + .3 * s) : 0;
+    if (flank) foot.lift += (outside ? .24 : .12) * sidestep + (outside ? .12 : .2) * air;
   }
   return pose;
 }

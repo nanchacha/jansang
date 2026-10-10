@@ -1,10 +1,6 @@
 import { Combat, ENEMY_HP, BASE_ATTACK_DAMAGE } from './combat.mjs';
+import { CARDS, BASE_CARDS, STARTER_DECK, drawCards } from './cards.mjs';
 
-export const XP_REWARDS = { normal: 10, elite: 15, boss: 30 };
-export const TRAINING = {
-  power: { name: '검술 수련', icon: '⚔', costs: [10, 20, 30] },
-  vitality: { name: '생명력 단련', icon: '◇', costs: [15, 25] },
-};
 export const ROUTES = [
   { name: '시련의 길', description: '정예 연전 · 휴식 없는 고위험 경로' },
   { name: '사냥의 길', description: '정예 보상과 한 번의 재정비' },
@@ -64,16 +60,15 @@ export class Expedition {
     this.nodes = makeMap(random, columns);
     this.state = 'map'; this.current = null; this.visited = [];
     this.hp = 5; this.maxHp = 5; this.potions = 2; this.weapon = 0;
-    this.xp = 0; this.lastXpGain = 0;
-    this.training = { power: 0, vitality: 0 };
     this.relics = []; this.offers = []; this.battle = null;
-    this.stats = { battles: 0, hits: 0, parries: 0, perfects: 0, potionsUsed: 0, elapsed: 0, xpEarned: 0 };
+    this.deck = [...STARTER_DECK]; this.cardOffers = [];
+    this.stats = { battles: 0, hits: 0, parries: 0, perfects: 0, potionsUsed: 0, elapsed: 0 };
   }
 
   get node() { return this.nodes.find(n => n.id === this.current); }
   get profile() {
     const rank = id => { const item = this.relics.find(r => r.id === id); return item ? item.rare ? 2 : 1 : 0; };
-    return { hp: this.hp, maxHp: this.maxHp, potions: this.potions, attackDamage: BASE_ATTACK_DAMAGE + this.weapon + this.training.power,
+    return { hp: this.hp, maxHp: this.maxHp, potions: this.potions, attackDamage: BASE_ATTACK_DAMAGE + this.weapon,
       firstStrikeBonus: rank('vanguard'),
       healAmount: 2 + rank('apothecary'), specialReduction: rank('ward') };
   }
@@ -94,8 +89,7 @@ export class Expedition {
     else if (node.type === 'treasure') this.offerRewards(false);
     else {
       this.state = 'battle';
-      this.lastXpGain = 0;
-      this.battle = new Combat({ random: this.random, enemy: node.type, bossHp: node.hp, profile: this.profile });
+      this.battle = new Combat({ random: this.random, enemy: node.type, bossHp: node.hp, profile: this.profile, deck: this.deck });
     }
     return true;
   }
@@ -111,28 +105,28 @@ export class Expedition {
     if (fight.state === 'lost') this.state = 'lost';
     else {
       this.stats.battles++;
-      this.lastXpGain = XP_REWARDS[this.node.type];
-      this.xp += this.lastXpGain;
-      this.stats.xpEarned += this.lastXpGain;
       this.completeNode();
-      if (this.node.type === 'boss') this.state = 'won';
-      else if (this.node.type === 'elite') this.offerRewards(true);
+      const fresh = BASE_CARDS.filter(id => !this.deck.some(owned => CARDS[owned].base === id));
+      this.cardOffers = drawCards(fresh, 3, this.random);
+      this.cardOffers.push(...drawCards(BASE_CARDS.filter(id => !this.cardOffers.includes(id)), 3 - this.cardOffers.length, this.random));
+      this.state = 'card-reward';
     }
     return true;
   }
-  trainingCost(id) {
-    if (id === 'vitality' && this.maxHp >= 7) return null;
-    return TRAINING[id]?.costs?.[this.training[id]] ?? null;
-  }
-  canTrain(id) {
-    const cost = this.trainingCost(id);
-    return this.state === 'map' && cost !== null && this.xp >= cost;
-  }
-  train(id) {
-    if (!this.canTrain(id)) return false;
-    this.xp -= this.trainingCost(id);
-    this.training[id]++;
-    if (id === 'vitality') { this.maxHp++; this.hp++; }
+  upgradableCards() { return [...new Set(this.deck)].filter(id => Object.hasOwn(CARDS, id + '+')); }
+  claimCard(id, upgrade = false) {
+    if (this.state !== 'card-reward') return false;
+    if (upgrade) {
+      if (!this.upgradableCards().includes(id)) return false;
+      this.deck[this.deck.indexOf(id)] = id + '+';
+    } else {
+      if (!this.cardOffers.includes(id)) return false;
+      this.deck.push(id);
+    }
+    this.cardOffers = [];
+    if (this.node.type === 'boss') this.state = 'won';
+    else if (this.node.type === 'elite') this.offerRewards(true);
+    else this.state = 'map';
     return true;
   }
   rest(choice) {

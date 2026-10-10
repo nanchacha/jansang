@@ -23,7 +23,7 @@ test('static deployment includes local page/module dependencies and audio, witho
       assert.ok((await stat(resolve(output, dirname(file), target))).isFile(), `${file} needs ${reference}`);
     }
   }
-  for (const file of [...SOUND_FILES, 'vendor/three/LICENSE', 'assets/concepts/hollow-warden-v1.png', 'assets/concepts/protagonist-v1.png']) {
+  for (const file of [...SOUND_FILES, 'vendor/three/LICENSE', 'assets/concepts/hollow-warden-v1.png', 'assets/concepts/protagonist-v1.png', 'assets/ui/status-items-v1.png']) {
     assert.ok((await stat(resolve(output, file))).size > 0, file);
   }
   const config = JSON.parse(await readFile(resolve(root, 'vercel.json'), 'utf8'));

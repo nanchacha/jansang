@@ -18,7 +18,7 @@ test('hound claws articulate on the combat clock, retain readable windups, and r
     game.start(); game.attack(0);
     for (const hit of game.sequence) {
       const original = JSON.stringify(hit), release = hit.launchAt ?? hit.at;
-      for (const at of [hit.windupAt, hit.commitAt, release - 260, release - 160, release, release + HOUND_RECOVERY_MS]) {
+      for (const at of [hit.windupAt, hit.windupAt + 170, hit.windupAt + 340, hit.commitAt, release - 260, release - 160, release, release + 180, release + HOUND_RECOVERY_MS]) {
         const before = values(houndRigPoseAt(hit, at - .001)), after = values(houndRigPoseAt(hit, at + .001));
         before.forEach((value, i) => assert.ok(Math.abs(value - after[i]) < .005, `${component.type}: continuous hound pose, including travel in pixels`));
       }
@@ -38,7 +38,7 @@ test('hound claws articulate on the combat clock, retain readable windups, and r
         assert.equal(arm.fingers.length, 3);
       }
       for (const [hand, leg] of Object.entries(hound.legs)) assert.ok(Math.abs(world(leg.ankle).y - .07 - strike.lift - strike.feet[hand].lift) < .025, 'Supporting paws stay planted; airborne paws follow their targets');
-      const bounds = new Box3().setFromObject(hound.root);
+      const bounds = new Box3().setFromObject(hound.root, true);
       assert.ok(bounds.min.y > -.4 && bounds.max.y < 4, `${component.type}: silhouette stays inside framing`);
       assert.ok(values(strike).every(Number.isFinite));
       hit.resolved = true; hit.result = 'perfect';
@@ -62,6 +62,36 @@ test('hound claws articulate on the combat clock, retain readable windups, and r
   const paused = world(hound.tail.at(-1));
   poseCharacter(hound, houndRigPoseAt(null, 800), 800);
   assert.ok(world(hound.tail.at(-1)).distanceTo(paused) < 1e-8, 'Idle motion freezes with the combat clock');
+});
+
+test('hound lateral cuts approach from both flanks and catch their weight on articulated hind paws', () => {
+  const hound = createHound();
+  const fixture = { windupAt: 1000, commitAt: 1800, at: 2700, tempo: 'hold' };
+  for (const type of ['hound-rake', 'hound-flurry', 'hound-scoop']) {
+    const left = houndRigPoseAt({ ...fixture, type, hand: 'left', guard: 'left' }, 1500);
+    const right = houndRigPoseAt({ ...fixture, type, hand: 'right', guard: 'right' }, 1500);
+    assert.ok(left.travel.x < -90 && right.travel.x > 90, `${type}: clearly different approach sides`);
+    for (const hand of ['left', 'right']) {
+      const hit = { ...fixture, type, hand, guard: hand };
+      const prepare = houndRigPoseAt(hit, 1500), strike = houndRigPoseAt(hit, hit.at);
+      assert.ok(Math.abs(strike.travel.x - prepare.travel.x) > 100, 'Body carries the cut across the arena');
+      assert.ok(houndRigPoseAt(hit, 1170).lift > .25, 'A visible push-off carries the sidestep');
+      for (const at of [1170, 1500, 2530, 2700, 2820]) {
+        const pose = houndRigPoseAt(hit, at); poseCharacter(hound, pose, at);
+        for (const [side, leg] of Object.entries(hound.legs)) {
+          const foot = pose.feet[side];
+          const local = hound.pelvis.worldToLocal(leg.ankle.getWorldPosition(new Vector3()));
+          assert.ok(Math.abs(local.x - leg.hip.position.x - foot.lateral) < .025, 'Sideways step is carried by leg joints');
+          assert.ok(Math.abs(local.z - foot.forward) < .025, 'Forward and sideways foot targets work together');
+          assert.ok(Math.abs(leg.ankle.getWorldPosition(new Vector3()).y - .07 - pose.lift - foot.lift) < .025, 'Hind paws reach the floor or intended hop height');
+          const up = new Vector3(0, 1, 0).transformDirection(leg.ankle.matrixWorld);
+          assert.ok(up.y > .999, 'Foot stays level when the hip banks sideways');
+        }
+      }
+      assert.deepEqual(houndRigPoseAt(hit, 2530), houndRigPoseAt(hit, 2530), 'Paused motion is deterministic');
+      samePose(houndRigPoseAt(hit, 1500, true), houndRigPoseAt(null, 0, true));
+    }
+  }
 });
 
 test('bell fists, planted feet and independently swaying mantle follow ten distinct continuous poses', () => {

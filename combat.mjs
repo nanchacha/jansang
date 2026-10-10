@@ -1,4 +1,5 @@
 import { MOTIONS } from './motion.mjs';
+import { CARDS, drawCards } from './cards.mjs';
 
 export const MODES = {
   challenge: { window: 115, perfect: 48, label: '도전' },
@@ -67,7 +68,7 @@ export const BELL_ATTACK_COMPONENTS = [
 
 // One clock, supplied by the caller: pausing and dropped frames cannot change a hit's timing.
 export class Combat {
-  constructor({ random = Math.random, mode = 'challenge', practiceAttack = 'random', enemy = 'boss', species = enemy === 'normal' ? 'hound' : enemy === 'elite' ? 'bell' : 'warden', bossHp = ENEMY_HP[enemy] ?? BOSS_HP, profile = {} } = {}) {
+  constructor({ random = Math.random, mode = 'challenge', practiceAttack = 'random', enemy = 'boss', species = enemy === 'normal' ? 'hound' : enemy === 'elite' ? 'bell' : 'warden', bossHp = ENEMY_HP[enemy] ?? BOSS_HP, profile = {}, deck = null } = {}) {
     this.random = random;
     this.mode = MODES[mode] ? mode : 'challenge';
     this.species = ['hound', 'bell'].includes(species) ? species : 'warden';
@@ -76,6 +77,7 @@ export class Combat {
     this.enemy = enemy;
     this.bossMaxHp = bossHp;
     this.profile = { ...profile };
+    this.deck = deck ? deck.filter(id => Object.hasOwn(CARDS, id)) : null;
     this.reset();
   }
 
@@ -109,6 +111,11 @@ export class Combat {
     this.time = 0;
     this.elapsed = 0;
     this.attackAt = -Infinity;
+    this.hand = { attack: [], support: [] };
+    this.selection = { attack: null, support: null };
+    this.activeCards = {};
+    this.nextBonus = 0;
+    this.lastDefense = null;
   }
 
   emit(type, extra = {}) { this.events.push({ type, at: this.time, ...extra }); }
@@ -118,19 +125,40 @@ export class Combat {
   start() {
     this.reset();
     this.state = 'player';
+    this.dealCards();
     this.emit('start');
   }
 
+  dealCards() {
+    if (!this.deck) return;
+    for (const kind of ['attack', 'support']) this.hand[kind] = drawCards(this.deck.filter(id => CARDS[id].kind === kind), 3, this.random);
+    this.selection = { attack: null, support: null };
+  }
+
+  selectCard(kind, id) {
+    if (this.state !== 'player' || this.round > 0 || !['attack', 'support'].includes(kind) || !this.hand[kind].includes(id)) return false;
+    this.selection[kind] = id;
+    return true;
+  }
+
+  cardsReady() { return !this.deck || Boolean(this.selection.attack && this.selection.support); }
+
   attack(now) {
     this.update(now);
-    if (this.state !== 'player') return false;
+    if (this.state !== 'player' || !this.cardsReady()) return false;
     this.round++;
     this.attackAt = now;
+    const charging = CARDS[this.selection.attack]?.base === 'charge' && !this.nextBonus;
     const damage = this.nextAttackDamage();
-    this.weakenedAttacks = Math.max(0, this.weakenedAttacks - 1);
-    this.attacks++;
+    this.activeCards = { ...this.selection };
+    if (charging) this.nextBonus = CARDS[this.selection.attack].bonus;
+    else {
+      this.nextBonus = 0;
+      this.weakenedAttacks = Math.max(0, this.weakenedAttacks - 1);
+      this.attacks++;
+    }
     this.damageBoss(damage);
-    this.emit('attack', { damage });
+    this.emit(charging ? 'charge' : 'attack', { damage });
     if (this.state === 'won') return true;
     this.state = 'boss';
     this.beginSequence(now + 850);
@@ -139,13 +167,14 @@ export class Combat {
 
   heal(now) {
     this.update(now);
-    if (this.state !== 'player' || this.mode === 'practice' || this.hp >= this.maxHp || this.potions === 0) return false;
+    if (this.state !== 'player' || !this.cardsReady() || this.mode === 'practice' || this.hp >= this.maxHp || this.potions === 0) return false;
     const amount = Math.min(this.healAmount, this.maxHp - this.hp);
     this.hp += amount;
     this.potions--;
     this.potionsUsed++;
     this.healAt = now;
     this.round++;
+    this.activeCards = {};
     this.emit('heal', { amount });
     this.state = 'boss';
     this.beginSequence(now + ITEM_USE_MS);
@@ -317,9 +346,17 @@ export class Combat {
       }
     }
     if (now >= this.endAt) {
+      const perfect = this.sequence.length > 0 && this.sequence.every(hit => hit.result === 'perfect');
+      const evaded = this.sequence.length > 0 && this.sequence.every(hit => hit.result === 'dodge');
+      this.lastDefense = perfect ? 'perfect' : evaded ? 'dodge' : null;
+      const support = CARDS[this.activeCards.support];
+      if (support?.base === 'pursuit' && evaded || support?.base === 'rhythm' && this.sequence.filter(hit => ['parry', 'perfect'].includes(hit.result)).length >= support.threshold || support?.base === 'insight' && this.sequence.filter(hit => hit.result === 'perfect').length >= support.threshold) {
+        this.nextBonus = Math.max(this.nextBonus, support.bonus);
+        this.emit('card-bonus', { card: this.activeCards.support });
+      }
       // Reward the whole completed enemy turn, once; individual parries still
       // deal no damage and an early final parry cannot skip the enemy's motion.
-      if (this.sequence.length && this.sequence.every(hit => hit.result === 'perfect')) {
+      if (perfect && CARDS[this.activeCards.attack]?.base !== 'heavy') {
         this.state = 'counter';
         this.attackAt = now;
         this.counters++;
@@ -336,8 +373,19 @@ export class Combat {
 
   nextHit() { return this.sequence.find(h => !h.resolved); }
   outgoingDamage(amount) { return amount * (this.weakenedAttacks > 0 ? WEAKEN_MULTIPLIER : 1); }
-  nextAttackDamage() { return this.outgoingDamage(this.attackDamage + (this.attacks === 0 ? this.profile.firstStrikeBonus ?? 0 : 0)); }
-  counterDamage() { return this.outgoingDamage(Math.max(1, Math.min(3, Math.ceil(this.attackDamage / 2)))); }
+  nextAttackDamage() {
+    const attack = CARDS[this.selection.attack], support = CARDS[this.selection.support];
+    if (attack?.base === 'charge' && !this.nextBonus) return 0;
+    const boosted = ['slash', 'heavy'].includes(attack?.base) || attack?.base === 'chase' && this.lastDefense === 'dodge' || attack?.base === 'riposte' && this.lastDefense === 'perfect';
+    const bonus = Math.max(this.nextBonus, boosted ? attack.bonus : 0, support?.base === 'resolve' && this.hp <= support.threshold ? support.bonus : 0);
+    return this.outgoingDamage(this.attackDamage + bonus + (this.attacks === 0 ? this.profile.firstStrikeBonus ?? 0 : 0));
+  }
+  counterDamage() {
+    const cards = this.state === 'player' ? this.selection : this.activeCards;
+    if (CARDS[cards.attack]?.base === 'heavy') return 0;
+    const support = CARDS[cards.support];
+    return this.outgoingDamage(Math.max(1, Math.min(3, Math.ceil(this.attackDamage / 2) + (support?.base === 'precision' ? support.bonus : 0))));
+  }
   dodgeDuration() { return MODES[this.mode].window * 2 + DODGE_EXTRA_MS; }
   isDodgingAt(now) { return now >= this.dodgeAt && now < this.dodgeAt + this.dodgeDuration(); }
   cooldownRemaining(now = this.time) { return Math.max(0, Math.max(this.lastTap, this.dodgeAt) + COOLDOWN - now); }

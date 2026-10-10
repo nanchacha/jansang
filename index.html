@@ -5,11 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#111716">
   <meta name="description" content="한 번의 탭, 완벽한 방어. 모든 공격을 패링할 수 있는 모바일 보스 전투 프로토타입.">
-  <title>잔상 · AFTERIMAGE</title>
+  <title>JANSANG · 잔상</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpath fill='%23d5bc87' d='M32 3 57 32 32 61 7 32Zm0 12L18 32l14 17 14-17Z'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
+  <section id="title-screen" class="title-screen" aria-label="JANSANG 시작 화면">
+    <h1 class="sr-only">JANSANG</h1>
+    <img class="title-art" src="./assets/concepts/title-pilgrimage-v1.png" alt="안개에 잠긴 폐허와 먼 탑을 향해 길을 떠나는 전사" fetchpriority="high">
+    <button id="enter-game" class="title-enter" aria-label="JANSANG 여정 시작" disabled><span>화면을 눌러 시작</span></button>
+  </section>
   <svg class="svg-library" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
     <symbol id="i-blade" viewBox="0 0 24 24"><path d="m14 4 6-1-1 6-9 9-4-4 8-10ZM5 13l6 6M7 17l-4 4"/></symbol>
     <symbol id="i-shield" viewBox="0 0 24 24"><path d="m12 2 8 4v6c0 5-8 10-8 10S4 17 4 12V6l8-4Z"/><path d="m8 12 3 3 5-6"/></symbol>
@@ -19,7 +24,7 @@
     <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h15m-5-5 5 5-5 5"/></symbol>
     <symbol id="i-potion" viewBox="0 0 24 24"><path d="M9 3h6v4l4 5v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7l4-5V3ZM8 3h8M6 13h12M12 15v4m-2-2h4"/></symbol>
   </svg>
-  <div class="app">
+  <div class="app" id="game-app" hidden>
     <header class="topbar">
       <a class="brand" href="./" aria-label="잔상 처음 화면"><span class="brand-mark">◈</span><span>잔상<small>AFTERIMAGE</small></span></a>
       <div class="edition"><span class="live-dot"></span> THE EXPEDITION <span class="version">/ 3D</span></div>
@@ -34,30 +39,27 @@
       <nav class="view-tabs" aria-label="플레이 방식"><button id="show-map" aria-pressed="true">원정 지도 <span>EXPEDITION</span></button><button id="show-solo" aria-pressed="false">단일 전투 · 연습</button></nav>
       <section id="expedition-view" aria-label="원정 지도">
         <header class="expedition-heading"><div><span class="overline">CHAPTER 01 / THE HOLLOW ROAD</span><h1>공허로 향하는 길</h1><p>연결된 길을 따라 최종 보스에 도전하세요</p></div><div class="expedition-progress"><strong id="expedition-floor">00</strong><span>/ 10 지점</span></div></header>
-        <div id="expedition-status" class="expedition-status" aria-label="원정 상태"></div>
-        <details class="training-panel" id="training-panel">
-          <summary id="training-toggle"><span>캐릭터 강화 <small id="training-ready">경험치로 능력 성장</small></span><b><span id="xp-balance">0</span> <small>XP</small></b></summary>
-          <div class="training-content">
-            <p>원정 승리 보상 · 일반 <b>10 XP</b> · 정예 <b>15 XP</b> · 보스 <b>30 XP</b></p>
-            <div class="training-options" id="training-options"></div>
-            <p id="training-feedback" role="status"></p>
-            <p class="training-note" id="training-note">경험치와 강화는 이번 원정에 적용됩니다. 새 원정·새로고침 시 초기화됩니다.</p>
+        <div id="expedition-status" class="expedition-status" role="group" aria-label="원정 상태">
+          <div id="expedition-vitality" class="vital-orb" role="progressbar" aria-label="생명력" aria-valuemin="0" aria-valuemax="5" aria-valuenow="5" title="생명력 5 / 5">
+            <div class="vital-glass" aria-hidden="true"><div class="vital-liquid"></div><b id="expedition-hp">5 <small>/ 5</small></b></div>
           </div>
-        </details>
-        <details class="route-guide" id="route-guide" open>
-          <summary>경로 안내 <small>직진 기준 · 최종 보스 포함</small></summary>
-          <div class="route-cards" id="route-cards"></div>
-          <p>빛나는 다음 지점으로 이동하세요. 지나온 지점으로 돌아갈 수 없습니다.</p>
-        </details>
+          <div id="expedition-power" class="equipment-stat" role="img" aria-label="공격력 1 · 0회 강화" title="공격력 1 · 0회 강화">
+            <div class="equipment-slot" aria-hidden="true"><i class="hud-item hud-sword"></i><b class="equipment-value" id="expedition-damage">1</b></div><small id="expedition-forging" aria-hidden="true">0회 강화</small>
+          </div>
+          <div id="expedition-potions" class="equipment-stat" role="img" aria-label="회복약 2개" title="회복약 2개">
+            <div class="equipment-slot" aria-hidden="true"><i class="hud-item hud-potion"></i><b class="equipment-value" id="expedition-potion-count">×2</b></div>
+          </div>
+          <div id="expedition-hits" class="hit-stat" role="img" aria-label="누적 피격 0회" title="누적 피격 0회"><i class="hud-item hud-hit" aria-hidden="true"></i><b id="expedition-hit-count" aria-hidden="true">0</b></div>
+        </div>
         <div class="expedition-layout">
           <section class="map-panel" aria-label="분기 지도">
             <div class="map-caption"><span>↑ 연결된 길로만 이동 · 되돌아갈 수 없음</span><button id="locate-node">현재 위치</button></div>
-            <div class="map-route-headings" id="map-route-headings"></div>
             <div class="map-scroll" id="map-scroll" tabindex="0" aria-label="원정 경로. 위로 스크롤하면 다음 지점이 보입니다."><div class="map-canvas" id="map-canvas"></div></div>
             <div class="map-legend" id="map-legend"></div>
           </section>
           <aside class="expedition-sidebar">
-            <section class="journey-card" id="journey-card" tabindex="-1" aria-live="polite"></section>
+            <section class="journey-card" id="journey-card" tabindex="-1" aria-live="polite" hidden></section>
+            <details class="deck-panel"><summary>보유 카드 <span id="deck-count">8장</span></summary><p>전투마다 공격·보조 카드를 한 장씩 선택해 끝까지 유지합니다. 같은 카드가 많을수록 후보로 나올 확률이 높아집니다.</p><div id="deck-list"></div></details>
             <section class="relic-panel"><div class="panel-heading"><h2>가져온 유물</h2><span class="overline">RELICS</span></div><div id="expedition-relics"></div></section>
             <p class="expedition-note">체력·회복약·강화는 다음 전투로 이어집니다.<br>쓰러지면 원정이 끝납니다. 새로고침하면 처음부터 시작합니다.</p>
           </aside>
@@ -89,7 +91,6 @@
               <h2 id="overlay-title">한 번의 탭.<br><em>완벽한 방어.</em></h2>
               <p id="overlay-copy">피할 수 없는 공격은 없습니다.<br>순간을 읽고, 모든 공격을 막아내세요.</p>
               <div class="result-stats" id="result-stats" hidden></div>
-              <div class="battle-xp" id="battle-xp" hidden></div>
               <button class="start-button" id="start">전투 시작 <svg><use href="#i-arrow"/></svg></button>
               <span class="overlay-foot" id="overlay-foot">이어폰을 착용하면 타이밍에 더 집중할 수 있어요</span>
             </div>
@@ -108,6 +109,7 @@
           <p id="dodge-rule" class="dodge-rule"></p>
           <p id="parry-cooldown-rule" class="parry-cooldown-rule"></p>
           <p id="counter-rule" class="dodge-rule"></p>
+          <p id="card-turn-note" class="card-turn-note" hidden></p>
         </section>
 
         <aside class="sidebar">
@@ -122,7 +124,7 @@
           <section class="guide-panel">
             <div class="panel-heading"><h2>순간을 읽는 법</h2><span class="guide-number">01 — 03</span></div>
             <ol class="guide-list">
-              <li><span>01</span><div><b>공격 또는 회복</b><p>내 차례에 공격하거나 회복약을 사용하세요. 어느 쪽이든 보스가 반격합니다.</p></div></li>
+              <li><span>01</span><div><b>한 번 고르고 공격하기</b><p>전투 시작에 공격·보조 카드를 한 장씩 고르면 끝까지 유지됩니다. 이후 공격 버튼으로 진행하며, 회복약은 공격 대신 한 턴을 소모합니다.</p></div></li>
               <li><span>02</span><div><b>팔과 무기를 읽으세요</b><p>빛나는 팔과 무기 쪽을 방어하세요. 금빛으로 밝아지는 순간 패링! 원거리 탄은 내 몸에 도착할 때.</p></div></li>
               <li><span>03</span><div><b>막거나, 피하거나</b><p>양손 공격은 좌우 동시 패링. 회피는 방향 없이 닿기 직전에 누르세요. 연속 공격은 매 타격마다 새로 입력합니다.</p></div></li>
             </ol>
@@ -149,6 +151,15 @@
     <p id="item-rule">사용하면 1턴을 소모하고 보스가 반격합니다.<br>목록 열기와 취소는 턴을 소모하지 않습니다.</p>
     <button id="use-potion" class="potion-choice" aria-describedby="potion-reason"><svg aria-hidden="true"><use href="#i-potion"/></svg><span><b>회복약</b><small id="potion-effect">생명력 +2 · 최대 5칸</small></span><span class="potion-stock" id="potion-stock">2 / 2</span></button>
     <p id="potion-reason" role="status"></p>
+  </dialog>
+  <dialog id="card-dialog" aria-labelledby="card-title" aria-describedby="card-rule">
+    <div class="item-heading"><div><span class="overline" id="card-round">BATTLE LOADOUT</span><h2 id="card-title">이번 전투의 두 장</h2></div><button id="card-cancel" class="item-cancel">닫기</button></div>
+    <p id="card-rule">공격 1장 + 보조 1장을 한 번만 고르세요.<br>첫 행동으로 확정한 조합은 전투가 끝날 때까지 유지됩니다.</p>
+    <fieldset><legend>01 <span>공격 카드</span> <small>한 장 선택</small></legend><div id="attack-cards" class="card-grid"></div></fieldset>
+    <fieldset><legend>02 <span>보조 카드</span> <small>한 장 선택</small></legend><div id="support-cards" class="card-grid"></div></fieldset>
+    <p id="card-preview" role="status" aria-live="polite"></p>
+    <div class="card-actions"><button id="card-heal" class="item-cancel">회복약 사용</button><button id="card-execute" class="start-button" disabled>두 장을 선택하세요</button></div>
+    <p class="card-fineprint">카드 공격 보너스는 가장 큰 하나만 적용 · 일반 최대 +1, 강화 최대 +2</p>
   </dialog>
   <script type="module" src="./app.mjs"></script>
 </body>

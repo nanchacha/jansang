@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Expedition, makeMap, XP_REWARDS } from './expedition.mjs';
+import { Expedition, makeMap } from './expedition.mjs';
+import { STARTER_DECK } from './cards.mjs';
 import { Combat, ATTACK_COMPONENTS, COUNTER_MS } from './combat.mjs';
 
 const seeded = seed => () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
@@ -30,11 +31,18 @@ test('new battles and expedition nodes use attack 1 and enemy HP 7/15/30 at ever
   }
   run.enter('1-0'); run.battle.start();
   assert.equal(run.battle.attackDamage, 1); assert.equal(run.battle.bossHp, 7);
-  run.battle.attack(1); assert.equal(run.battle.bossHp, 6);
+  chooseCards(run.battle); run.battle.attack(1); assert.equal(run.battle.bossHp, 6);
 });
+
+function chooseCards(fight) {
+  if (!fight.deck) return;
+  fight.selectCard('attack', ['slash', 'chase', 'riposte', 'heavy'].find(id => fight.hand.attack.includes(id)));
+  fight.selectCard('support', ['pursuit', 'rhythm', 'insight', 'precision', 'resolve'].find(id => fight.hand.support.includes(id)));
+}
 
 function blockTurn(fight) {
   const hp = fight.bossHp;
+  const counter = fight.counterDamage();
   for (const hit of fight.sequence) {
     if (hit.guard === 'both') {
       fight.tap(hit.at, 'left'); fight.tap(hit.at, 'right');
@@ -43,20 +51,20 @@ function blockTurn(fight) {
   }
   assert.equal(fight.bossHp, hp, 'individual parries do not deal immediate damage');
   fight.update(fight.endAt);
-  assert.equal(fight.bossHp, Math.max(0, hp - fight.counterDamage()), 'a complete perfect turn earns one counter');
+  assert.equal(fight.bossHp, Math.max(0, hp - counter), 'a complete perfect turn earns one counter unless the card prevents it');
   if (fight.state === 'counter') fight.update(fight.time + COUNTER_MS);
 }
 
 function win(fight) {
   while (!['won', 'lost'].includes(fight.state)) {
+    chooseCards(fight);
     assert.ok(fight.attack(fight.time + 1));
     if (fight.state === 'boss') blockTurn(fight);
   }
   assert.equal(fight.state, 'won');
 }
 
-test('experience is awarded once per victory at 10/15/30 and defeats grant no experience', () => {
-  assert.deepEqual(XP_REWARDS, { normal: 10, elite: 15, boss: 30 });
+test('battle settlement preserves progress and elite rewards without experience or automatic upgrades', () => {
   for (const type of battleTypes) for (const outcome of ['won', 'lost']) {
     const run = new Expedition(() => 0);
     const node = run.nodes.find(n => n.type === type);
@@ -64,58 +72,30 @@ test('experience is awarded once per victory at 10/15/30 and defeats grant no ex
     run.current = node.id; run.state = 'battle';
     const fight = run.battle = new Combat({ enemy: type, profile: run.profile, random: () => 0 });
     fight.start();
-    assert.equal(run.settleBattle(), false); assert.equal(run.xp, 0);
+    assert.equal(run.settleBattle(), false);
     if (outcome === 'won') win(fight);
     else { fight.hp = 1; fight.attack(1); fight.update(fight.endAt); }
     assert.equal(fight.state, outcome);
     assert.equal(run.settleBattle(), true);
-    const reward = outcome === 'won' ? XP_REWARDS[type] : 0;
-    assert.equal(run.xp, reward); assert.equal(run.lastXpGain, reward); assert.equal(run.stats.xpEarned, reward);
+    assert.equal(run.state, outcome === 'lost' ? 'lost' : 'card-reward');
+    if (outcome === 'won') {
+      assert.equal(run.cardOffers.length, 3);
+      assert.equal(run.claimCard(run.cardOffers[0]), true);
+      assert.equal(run.state, { normal: 'map', elite: 'reward', boss: 'won' }[type]);
+    }
+    assert.equal(run.stats.battles, outcome === 'won' ? 1 : 0);
+    assert.equal(run.hp, fight.hp); assert.equal(run.potions, fight.potions);
+    assert.equal(run.stats.hits, fight.hits);
+    assert.equal(run.profile.attackDamage, 1); assert.equal(run.maxHp, 5);
+    assert.equal('xp' in run, false); assert.equal('training' in run, false);
+    assert.equal('xpEarned' in run.stats, false);
+    if (outcome === 'won' && type === 'elite') {
+      assert.ok(run.offers.length > 0); assert.ok(run.offers.every(offer => offer.rare));
+    } else assert.deepEqual(run.offers, []);
+    const stats = { ...run.stats }, offers = [...run.offers];
     assert.equal(run.settleBattle(), false);
-    assert.equal(run.xp, reward); assert.equal(run.stats.xpEarned, reward);
+    assert.deepEqual(run.stats, stats); assert.deepEqual(run.offers, offers);
   }
-});
-
-test('experience purchases spend the shown costs, persist in the next battle, respect limits, and reset for a new run', () => {
-  const run = new Expedition(() => 0);
-  assert.equal(run.train('power'), false); assert.equal(run.train('vitality'), false);
-  run.enter('1-0'); run.battle.start(); win(run.battle); run.settleBattle();
-  assert.equal(run.xp, 10); assert.equal(run.trainingCost('power'), 10);
-  assert.equal(run.canTrain('vitality'), false);
-  const node = run.current, path = [...run.visited];
-  assert.equal(run.train('power'), true);
-  assert.equal(run.xp, 0); assert.equal(run.profile.attackDamage, 2);
-  assert.equal(run.stats.xpEarned, 10, 'spending never changes lifetime earned XP');
-  assert.equal(run.trainingCost('power'), 20); assert.equal(run.train('power'), false);
-  assert.equal(run.current, node); assert.deepEqual(run.visited, path);
-  run.enter(run.available()[0]); run.battle.start();
-  assert.equal(run.battle.attackDamage, 2); assert.equal(run.lastXpGain, 0);
-  run.battle.attack(1); assert.equal(run.battle.bossHp, run.node.hp - 2);
-  run.xp = 100;
-  for (const state of ['battle', 'rest', 'reward', 'won', 'lost']) {
-    run.state = state; assert.equal(run.train('power'), false); assert.equal(run.xp, 100);
-  }
-  run.state = 'map';
-  for (const id of ['missing', '__proto__', 'constructor']) assert.equal(run.train(id), false);
-  assert.equal(run.train('power'), true); assert.equal(run.xp, 80);
-  assert.equal(run.trainingCost('power'), 30);
-  assert.equal(run.train('power'), true); assert.equal(run.xp, 50);
-  assert.equal(run.profile.attackDamage, 4); assert.equal(run.trainingCost('power'), null);
-  assert.equal(run.train('power'), false); assert.equal(run.xp, 50);
-  run.hp = 2; run.stats.hits = 3;
-  assert.equal(run.train('vitality'), true);
-  assert.equal(run.hp, 3); assert.equal(run.maxHp, 6); assert.equal(run.xp, 35);
-  assert.equal(run.trainingCost('vitality'), 25);
-  assert.equal(run.train('vitality'), true);
-  assert.equal(run.hp, 4); assert.equal(run.maxHp, 7); assert.equal(run.xp, 10);
-  assert.equal(run.stats.hits, 3); assert.equal(run.train('vitality'), false);
-  run.state = 'rest'; assert.equal(run.rest('vitality'), false);
-  const rested = new Expedition(() => 0); rested.state = 'rest'; rested.rest('vitality'); rested.xp = 100;
-  assert.equal(rested.train('vitality'), true); assert.equal(rested.maxHp, 7);
-  assert.equal(rested.train('vitality'), false, 'rest and XP share the maximum health cap');
-  const next = new Expedition();
-  assert.equal(next.xp, 0); assert.equal(next.stats.xpEarned, 0); assert.equal(next.profile.attackDamage, 1);
-  assert.deepEqual(next.training, { power: 0, vitality: 0 });
 });
 
 test('1,000 maps have four distinct routes, sparse non-crossing forks and about 80% combat', () => {
@@ -131,17 +111,16 @@ test('1,000 maps have four distinct routes, sparse non-crossing forks and about 
     variants.add(nodes.map(n => n.type).join(','));
     forks.add(nodes.filter(n => n.next.length === 2).map(n => n.id).join(','));
     const budgets = [
-      { battles: 9, elites: 3, rests: 0, chests: 1, xp: 125 },
-      { battles: 8, elites: 2, rests: 1, chests: 1, xp: 110 },
-      { battles: 8, elites: 0, rests: 2, chests: 0, xp: 100 },
-      { battles: 7, elites: 1, rests: 1, chests: 2, xp: 95 },
+      { battles: 9, elites: 3, rests: 0, chests: 1 },
+      { battles: 8, elites: 2, rests: 1, chests: 1 },
+      { battles: 8, elites: 0, rests: 2, chests: 0 },
+      { battles: 7, elites: 1, rests: 1, chests: 2 },
     ];
     for (let column = 0; column < 4; column++) {
       const route = nodes.filter(n => n.column === column || n.type === 'boss');
       const count = type => route.filter(n => n.type === type).length;
       assert.deepEqual({ battles: route.filter(n => battleTypes.includes(n.type)).length,
-        elites: count('elite'), rests: count('rest'), chests: count('treasure'),
-        xp: route.reduce((sum, n) => sum + (XP_REWARDS[n.type] || 0), 0) }, budgets[column]);
+        elites: count('elite'), rests: count('rest'), chests: count('treasure') }, budgets[column]);
     }
     for (const node of nodes) {
       const parents = nodes.filter(n => n.next.includes(node.id));
@@ -187,6 +166,7 @@ test('1,000 maps have four distinct routes, sparse non-crossing forks and about 
 test('choosing a start locks other regions, and taking a fork permanently leaves the original lane', () => {
   const finishStop = run => {
     if (run.state === 'battle') { run.battle.start(); win(run.battle); run.settleBattle(); }
+    if (run.state === 'card-reward') assert.ok(run.claimCard(run.cardOffers[0]));
     if (run.state === 'rest') assert.ok(run.rest('leave'));
     if (run.state === 'reward') assert.ok(run.claim(run.offers[0].id));
   };
@@ -238,7 +218,6 @@ test('200 complete expeditions remain no-hit clearable, preserve upgrades and ca
       assert.ok(run.enter(id));
       assert.equal(run.enter(id), false, 'cannot enter twice or bypass an unresolved encounter');
       if (run.state === 'battle') {
-        const previousXP = run.xp;
         const profile = { ...run.profile };
         const fight = run.battle; fight.start();
         assert.equal(fight.species, { normal: 'hound', elite: 'bell', boss: 'warden' }[run.node.type]);
@@ -247,9 +226,14 @@ test('200 complete expeditions remain no-hit clearable, preserve upgrades and ca
         win(fight);
         if (run.node.type === 'elite') eliteCount++;
         assert.equal(fight.hits, 0); assert.ok(run.settleBattle());
-        assert.equal(run.xp, previousXP + XP_REWARDS[run.node.type]);
         assert.equal(run.settleBattle(), false, 'no duplicate stats or rewards');
         assert.equal(run.hp, profile.hp); assert.equal(run.potions, profile.potions);
+      }
+      if (run.state === 'card-reward') {
+        assert.equal(run.cardOffers.length, 3); assert.equal(new Set(run.cardOffers).size, 3);
+        const selected = run.cardOffers[0];
+        assert.ok(run.claimCard(selected)); assert.equal(run.claimCard(selected), false);
+        assert.equal(run.deck.length, STARTER_DECK.length + run.stats.battles);
       }
       if (run.state === 'rest') {
         assert.ok(run.rest(run.weapon < 2 ? 'weapon' : run.maxHp < 7 ? 'vitality' : 'leave'));
@@ -265,8 +249,6 @@ test('200 complete expeditions remain no-hit clearable, preserve upgrades and ca
     assert.equal(run.visited.length, 10); assert.equal(new Set(run.visited).size, 10);
     assert.equal(run.stats.hits, 0); assert.ok(run.stats.perfects > 0);
     assert.equal(run.stats.battles, run.visited.filter(id => battleTypes.includes(run.nodes.find(n => n.id === id).type)).length);
-    assert.equal(run.xp, run.visited.reduce((sum, id) => sum + (XP_REWARDS[run.nodes.find(n => n.id === id).type] || 0), 0));
-    assert.equal(run.stats.xpEarned, run.xp, 'rests and chests award no XP');
     assert.equal(run.available().length, 0); assert.equal(run.enter('1-0'), false);
   }
   assert.ok(eliteCount > 0);
@@ -314,18 +296,18 @@ test('relic effects apply to real combat, including healing before a first strik
     const remaining = durable.bossHp; durable.attack(durable.time + 1);
     assert.equal(durable.bossHp, remaining - 3, 'first-strike bonus is not repeated within the fight');
     assert.ok(run.enter('1-0'));
-    const fight = run.battle; fight.start();
+    const fight = run.battle; fight.start(); chooseCards(fight);
     assert.equal(fight.heal(1), true); assert.equal(fight.hp, rare ? 5 : 4);
     assert.equal(fight.potions, 1); blockTurn(fight);
     assert.ok(fight.attack(fight.time + 1));
     assert.equal(fight.bossHp, Math.max(0, 7 - 2 - 3 - bonus), 'healing and its counter preserve the first direct attack bonus');
     if (fight.state === 'boss') blockTurn(fight);
     win(fight);
-    assert.equal(fight.state, 'won'); run.settleBattle();
+    assert.equal(fight.state, 'won'); run.settleBattle(); run.claimCard(run.cardOffers[0]);
     assert.equal(run.hp, rare ? 5 : 4); assert.equal(run.potions, 1); assert.equal(run.stats.potionsUsed, 1);
     assert.ok(run.enter(run.available()[0]));
     run.battle.start(); assert.equal(run.battle.hp, run.hp); assert.equal(run.battle.potions, 1);
-    run.battle.attack(1); assert.equal(run.battle.bossHp, Math.max(0, run.node.hp - 3 - bonus), 'first strike renews once per fight');
+    chooseCards(run.battle); run.battle.attack(1); assert.equal(run.battle.bossHp, Math.max(0, run.node.hp - 3 - bonus), 'first strike renews once per fight');
     for (const type of ['judgment', 'execution']) {
       const index = ATTACK_COMPONENTS.findIndex(c => c.type === type);
       const rolls = [0, (index + .5) / ATTACK_COMPONENTS.length];
@@ -348,7 +330,7 @@ test('normal encounters exclude specials; death ends the run and a new expeditio
     }
   }
   const run = new Expedition(() => 0); run.hp = 1; run.enter('1-0');
-  run.battle.start(); run.battle.attack(1); run.battle.update(run.battle.endAt);
+  run.battle.start(); chooseCards(run.battle); run.battle.attack(1); run.battle.update(run.battle.endAt);
   assert.equal(run.battle.state, 'lost'); assert.ok(run.settleBattle());
   assert.equal(run.state, 'lost'); assert.equal(run.hp, 0); assert.equal(run.stats.hits, 1);
   assert.equal(run.settleBattle(), false); assert.equal(run.enter('2-0'), false); assert.equal(run.claim('potion'), false); assert.equal(run.rest('heal'), false);

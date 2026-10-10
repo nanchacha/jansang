@@ -7,6 +7,9 @@ import { SOUND_FILES } from './audio.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const files = new Set(['index.html', 'style.css', 'app.mjs', 'combat.mjs', 'expedition.mjs', 'motion.mjs', 'audio.mjs', 'fighters3d.mjs', 'vendor/three/three.module.min.js', 'vendor/three/three.core.min.js', 'assets/concepts/hollow-warden-v1.png', 'assets/concepts/protagonist-v1.png', ...SOUND_FILES]);
+files.add('assets/concepts/title-pilgrimage-v1.png');
+files.add('assets/ui/status-items-v1.png');
+files.add('cards.mjs');
 const types = { html: 'text/html; charset=utf-8', css: 'text/css', mjs: 'text/javascript', js: 'text/javascript', png: 'image/png', wav: 'audio/wav' };
 const port = Number(process.env.PORT || 4173);
 http.createServer(async (req, res) => {
